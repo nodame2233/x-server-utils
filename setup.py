@@ -17,7 +17,7 @@ setup(
     install_requires=[
         "fastapi",
         "uvicorn",
-        "requests",
+        "requests>=2.32.4",
         "loguru",
     ],
     classifiers=[
