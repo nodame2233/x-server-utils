@@ -31,6 +31,17 @@ class ResponseCode:
     ROBOT_VERIFY = (1001, "robot verify required")
 
 
+class ParseStatus:
+    """解析状态枚举"""
+    UPLOADING = (1, "上传中")
+    UPLOAD_COMPLETED = (2, "上传完成")
+    PARSING = (3, "解析中")
+    PARSING_COMPLETED = (4, "解析完成")
+    PARSING_FAILED = (5, "解析失败")
+    UPLOAD_FAILED = (6, "上传失败")
+    FILE_ERROR = (7, "文件错误，无法解析")
+
+
 class ServerUtil(object):
     @staticmethod
     def _resolve_app_target(explicit_app: str | None = None):
