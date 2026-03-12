@@ -120,14 +120,14 @@ class ServerUtil(object):
         return changelog_content, latest_version
 
     @staticmethod
-    def run_server(project_name: str, default_port: int = 8000, require_inner_url: bool = False):
+    def run_server(default_port: int = 8000, require_inner_url: bool = False):
         """
         Uvicorn 启动入口，支持跨平台与容器场景。
-        :param project_name: 项目名称
         :param default_port: 默认端口
         :param require_inner_url: 是否强依赖内部接口地址
         """
-        parser = argparse.ArgumentParser(description=f"{project_name} API Service")
+        parser = argparse.ArgumentParser(description=f"API Service")
+        parser.add_argument("-j", "--project", type=str, default=None, help="项目名称")
         parser.add_argument("-H", "--host", type=str, default="0.0.0.0", help="绑定地址 (默认: 0.0.0.0)")
         parser.add_argument("-p", "--port", type=int, default=default_port, help=f"启动端口 (默认: {default_port})")
         parser.add_argument("-w", "--workers", type=int, default=1, help="工作进程数 (默认: 1)")
@@ -161,6 +161,11 @@ class ServerUtil(object):
         host = args.host
         port = args.port
         workers = ServerUtil._normalize_workers(args.workers)
+        if args.project:
+            project_name = args.project
+            os.environ["PROJECT_NAME"] = project_name
+        else:
+            project_name = "Unknown"
         if args.inner_url:
             os.environ["SERVICE_INNER_URL"] = args.inner_url
         if args.username:
