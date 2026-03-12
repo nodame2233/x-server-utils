@@ -5,7 +5,7 @@ import traceback
 import sys
 from pathlib import Path
 from fastapi import FastAPI, Request as FastAPIRequest
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, HTTPException
 from starlette.responses import JSONResponse
 import __main__  # noqa
 import uvicorn
@@ -15,6 +15,7 @@ import time
 import argparse
 import concurrent.futures
 from loguru import logger
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHANGELOG_PATH = os.path.join(BASE_DIR, "txt", "CHANGELOG.md")
 
@@ -120,12 +121,10 @@ class ServerUtil(object):
         return changelog_content, latest_version
 
     @staticmethod
-    def run_server(default_port: int = 8000, require_inner_url: bool = False, require_library: bool = False):
+    def run_server(default_port: int = 8000):
         """
         Uvicorn 启动入口，支持跨平台与容器场景。
         :param default_port: 默认端口号
-        :param require_inner_url: 是否强依赖内部接口地址
-        :param require_library: 是否强依赖库接口
         """
         parser = argparse.ArgumentParser(description="API Service")
         parser.add_argument("-j", "--project", type=str, default=None, help="项目名称")
@@ -151,16 +150,16 @@ class ServerUtil(object):
             "--inner_url",
             type=str,
             default=None,
-            required=require_inner_url,
-            help="内部接口地址" + (" (必填)" if require_inner_url else " (默认: None)")
+            # required=require_inner_url,
+            help="内部接口地址 (默认: None)"
         )
         parser.add_argument(
             "-l",
             "--library",
             type=str,
             default=None,
-            required=require_library,
-            help="数据库依赖" + (" (必填)" if require_library else " (默认: None)")
+            # required=require_library,
+            help="数据库依赖 (默认: None)"
         )
         parser.add_argument("-U", "--username", type=str, default=None, help="数据库访问账号")
         parser.add_argument("-P", "--password", type=str, default=None, help="数据库访问密码")
@@ -174,7 +173,8 @@ class ServerUtil(object):
             project_name = args.project
             os.environ["PROJECT_NAME"] = project_name
         else:
-            project_name = "Unknown"
+            project_name = "ALL"
+
         if args.inner_url:
             os.environ["SERVICE_INNER_URL"] = args.inner_url
         if args.library:
@@ -232,19 +232,40 @@ class ServerUtil(object):
         具体的异常处理逻辑
         """
         if isinstance(exc, RequestValidationError):
+            # 参数校验错误 - 应该返回400或422，并提供具体的错误信息
             logger.error(f"【参数校验拦截】 URL: {request.url} \n{str(exc)}")
+            errors = exc.errors()
+            return JSONResponse(
+                status_code=400,  # 通常参数错误使用422 Unprocessable Entity
+                content={
+                    'code': 400,  # 可以定义专门的参数错误码
+                    'data': [],
+                    'message': f"请求参数校验失败, {errors}"
+                }
+            )
+        elif isinstance(exc, HTTPException):
+            # HTTP异常处理
+            logger.error(f"【HTTP异常拦截】 URL: {request.url} \n{str(exc)}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    'code': 400,
+                    'data': [],
+                    'message': f'HTTP异常 {exc.detail}'
+                }
+            )
         else:
+            # 其他未预期的异常 - 返回500
             logger.error(f"【全局代码异常拦截】 URL: {request.url} \n{traceback.format_exc()}")
-
-        status = ResponseCode.INNER_ERROR
-        return JSONResponse(
-            status_code=500,
-            content={
-                'code': status[0],
-                'data': [],
-                'message': status[1]
-            }
-        )
+            status = ResponseCode.INNER_ERROR
+            return JSONResponse(
+                status_code=500,
+                content={
+                    'code': status[0],
+                    'data': [],
+                    'message': status[1]
+                }
+            )
 
     @staticmethod
     def register_global_exceptions(app: FastAPI):
