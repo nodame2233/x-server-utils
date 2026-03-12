@@ -18,6 +18,31 @@ from loguru import logger
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHANGELOG_PATH = os.path.join(BASE_DIR, "txt", "CHANGELOG.md")
+PROJECT_CONFIG = {
+    'osra': {
+        'port': 2089,
+        'required_params': [],
+    },
+    'fileparse': {
+        'port': 2091,
+        'required_params': ['inner_url', 'library'],
+    },
+    'chemparse': {
+        'port': 2088,
+        'required_params': ['inner_url', 'library'],
+    },
+    'patenthtml': {
+        'port': 2090,
+        'required_params': [],
+    },
+}
+ENV_MAPPING = [
+    ('project', 'PROJECT_NAME'),
+    ('inner_url', 'SERVICE_INNER_URL'),
+    ('library', 'SERVICE_LIBRARY_URL'),
+    ('username', 'DB_USERNAME'),
+    ('password', 'DB_PASSWORD'),
+]
 
 
 class ResponseCode:
@@ -127,66 +152,55 @@ class ServerUtil(object):
         :param default_port: 默认端口号
         """
         parser = argparse.ArgumentParser(description="API Service")
-        parser.add_argument("-j", "--project", type=str, default=None, help="项目名称")
+        parser.add_argument("-j", "--project", type=str, required=True, help="项目名称（必填）")
         parser.add_argument("-H", "--host", type=str, default="0.0.0.0", help="绑定地址 (默认: 0.0.0.0)")
         parser.add_argument("-p", "--port", type=int, default=default_port, help=f"启动端口 (默认: {default_port})")
         parser.add_argument("-w", "--workers", type=int, default=1, help="工作进程数 (默认: 1)")
         parser.add_argument("-a", "--app", type=str, default=None, help="ASGI 入口，例如 chemparse_server:app")
         parser.add_argument("-L", "--log-level", type=str, default="info", help="日志级别 (默认: info)")
-        parser.add_argument(
-            "--limit-max-requests",
-            type=int,
-            default=0,
-            help="每个 worker 最多处理请求数，达到后自动重启 (0 表示不限制)"
-        )
-        parser.add_argument(
-            "--timeout-worker-healthcheck",
-            type=int,
-            default=10,
-            help="worker 健康检查超时秒数 (默认: 10)"
-        )
-        parser.add_argument(
-            "-i",
-            "--inner_url",
-            type=str,
-            default=None,
-            # required=require_inner_url,
-            help="内部接口地址 (默认: None)"
-        )
-        parser.add_argument(
-            "-l",
-            "--library",
-            type=str,
-            default=None,
-            # required=require_library,
-            help="数据库依赖 (默认: None)"
-        )
+        parser.add_argument("--limit-max-requests", type=int, default=0,
+                            help="每个 worker 最多处理请求数，达到后自动重启 (0 表示不限制)")
+        parser.add_argument("--timeout-worker-healthcheck", type=int, default=10,
+                            help="worker 健康检查超时秒数 (默认: 10)")
+        parser.add_argument("-i", "--inner_url", type=str, default=None, help="内部接口地址")
+        parser.add_argument("-l", "--library", type=str, default=None, help="数据库依赖")
         parser.add_argument("-U", "--username", type=str, default=None, help="数据库访问账号")
         parser.add_argument("-P", "--password", type=str, default=None, help="数据库访问密码")
 
         args = parser.parse_args()
 
-        host = args.host
-        port = args.port
+        # 参数校验
+        project_name = args.project
+        if project_name not in PROJECT_CONFIG:
+            raise ValueError(f"无效的项目名称: {project_name}，可选值: {list(PROJECT_CONFIG.keys())}")
+
+        project_config = PROJECT_CONFIG[project_name]
+
+        # 端口冲突检测
+        if args.port == default_port and project_config['port'] != default_port:
+            logger.warning(f"项目 {project_name} 推荐使用端口 {project_config['port']}，当前使用 {args.port}")
+
+        # 必需参数校验
+        missing_params = []
+        for param in project_config['required_params']:
+            if not getattr(args, param.replace('inner_url', 'inner_url').replace('library', 'library')):
+                missing_params.append(param)
+
+        if missing_params:
+            raise ValueError(f"项目 {project_name} 缺少必需参数: {', '.join(missing_params)}")
+
+        # 设置环境变量（使用统一方法）
+        for arg_name, env_name in ENV_MAPPING:
+            value = getattr(args, arg_name, None)
+            if value:
+                os.environ[env_name] = value
+
+        # 工作进程数规范化
         workers = ServerUtil._normalize_workers(args.workers)
-        if args.project:
-            project_name = args.project
-            os.environ["PROJECT_NAME"] = project_name
-        else:
-            project_name = "ALL"
-
-        if args.inner_url:
-            os.environ["SERVICE_INNER_URL"] = args.inner_url
-        if args.library:
-            os.environ["SERVICE_LIBRARY_URL"] = args.library
-        if args.username:
-            os.environ["DB_USERNAME"] = args.username
-        if args.password:
-            os.environ["DB_PASSWORD"] = args.password
-
         if workers != args.workers:
             logger.warning(f"workers 参数非法({args.workers})，已自动调整为 {workers}")
 
+        # 容器环境检查
         if workers > 1 and ServerUtil._is_linux_container():
             cpu_count = os.cpu_count() or 1
             recommended_workers = max(1, min(cpu_count, 4))
@@ -196,35 +210,50 @@ class ServerUtil(object):
                     f"否则可能出现 OOM 或 'Child process died'。"
                 )
 
+        # 获取本地IP
         try:
             local_ip = socket.gethostbyname(socket.gethostname())
-        except Exception:  # noqa
+        except:  # noqa
             local_ip = "127.0.0.1"
 
+        # 解析应用目标
         app_target, app_dir = ServerUtil._resolve_app_target(args.app)
         if app_dir and app_dir not in sys.path:
             sys.path.insert(0, app_dir)
 
+        # 启动信息日志
         logger.info(
-            f"\n项目名称: {project_name}\n"
-            f"局域网访问: http://{local_ip}:{port}\n"
-            f"Swagger文档: http://{local_ip}:{port}/docs\n"
-            f"配置参数: host={host}, workers={workers}, app={app_target}, app_dir={app_dir}\n"
-            f"内部接口地址: {args.inner_url}\n"
-            f"外部库地址: {args.library}"
+            f"\n{'=' * 50}\n"
+            f"项目名称: {project_name}\n"
+            f"局域网访问: http://{local_ip}:{args.port}\n"
+            f"Swagger文档: http://{local_ip}:{args.port}/docs\n"
+            f"配置参数:\n"
+            f"  - 绑定地址: {args.host}\n"
+            f"  - 工作进程: {workers}\n"
+            f"  - 应用入口: {app_target}\n"
+            f"  - 应用目录: {app_dir}\n"
+            f"  - 日志级别: {args.log_level}\n"
+            f"  - 内部接口: {args.inner_url or '未配置'}\n"
+            f"  - 外部库: {args.library or '未配置'}\n"
+            f"{'=' * 50}"
         )
 
-        uvicorn.run(
-            app_target,
-            host=host,
-            port=port,
-            workers=workers,
-            app_dir=app_dir,
-            log_level=args.log_level,
-            timeout_worker_healthcheck=args.timeout_worker_healthcheck,
-            limit_max_requests=args.limit_max_requests if args.limit_max_requests > 0 else None,
-            reload=False,
-        )
+        # 启动服务
+        try:
+            uvicorn.run(
+                app_target,
+                host=args.host,
+                port=args.port,
+                workers=workers,
+                app_dir=app_dir,
+                log_level=args.log_level,
+                timeout_worker_healthcheck=args.timeout_worker_healthcheck,
+                limit_max_requests=args.limit_max_requests if args.limit_max_requests > 0 else None,
+                reload=False,
+            )
+        except Exception as e:
+            logger.error(f"服务启动失败: {str(e)}")
+            raise
 
     @staticmethod
     async def unified_exception_handler(request: FastAPIRequest, exc: Exception):
