@@ -120,11 +120,12 @@ class ServerUtil(object):
         return changelog_content, latest_version
 
     @staticmethod
-    def run_server(default_port: int = 8000, require_inner_url: bool = False):
+    def run_server(default_port: int = 8000, require_inner_url: bool = False, require_library: bool = False):
         """
         Uvicorn 启动入口，支持跨平台与容器场景。
-        :param default_port: 默认端口
+        :param default_port: 默认端口号
         :param require_inner_url: 是否强依赖内部接口地址
+        :param require_library: 是否强依赖库接口
         """
         parser = argparse.ArgumentParser(description=f"API Service")
         parser.add_argument("-j", "--project", type=str, default=None, help="项目名称")
@@ -132,7 +133,7 @@ class ServerUtil(object):
         parser.add_argument("-p", "--port", type=int, default=default_port, help=f"启动端口 (默认: {default_port})")
         parser.add_argument("-w", "--workers", type=int, default=1, help="工作进程数 (默认: 1)")
         parser.add_argument("-a", "--app", type=str, default=None, help="ASGI 入口，例如 chemparse_server:app")
-        parser.add_argument("-l", "--log-level", type=str, default="info", help="日志级别 (默认: info)")
+        parser.add_argument("-L", "--log-level", type=str, default="info", help="日志级别 (默认: info)")
         parser.add_argument(
             "--limit-max-requests",
             type=int,
@@ -153,6 +154,14 @@ class ServerUtil(object):
             required=require_inner_url,
             help="内部接口地址" + (" (必填)" if require_inner_url else " (默认: None)")
         )
+        parser.add_argument(
+            "-l",
+            "--library",
+            type=str,
+            default=None,
+            required=require_library,
+            help="数据库依赖" + (" (必填)" if require_library else " (默认: None)")
+        )
         parser.add_argument("-U", "--username", type=str, default=None, help="数据库访问账号")
         parser.add_argument("-P", "--password", type=str, default=None, help="数据库访问密码")
 
@@ -168,6 +177,8 @@ class ServerUtil(object):
             project_name = "Unknown"
         if args.inner_url:
             os.environ["SERVICE_INNER_URL"] = args.inner_url
+        if args.library:
+            os.environ["SERVICE_LIBRARY_URL"] = args.library
         if args.username:
             os.environ["DB_USERNAME"] = args.username
         if args.password:
