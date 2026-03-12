@@ -127,7 +127,7 @@ class ServerUtil(object):
         :param require_inner_url: 是否强依赖内部接口地址
         :param require_library: 是否强依赖库接口
         """
-        parser = argparse.ArgumentParser(description=f"API Service")
+        parser = argparse.ArgumentParser(description="API Service")
         parser.add_argument("-j", "--project", type=str, default=None, help="项目名称")
         parser.add_argument("-H", "--host", type=str, default="0.0.0.0", help="绑定地址 (默认: 0.0.0.0)")
         parser.add_argument("-p", "--port", type=int, default=default_port, help=f"启动端口 (默认: {default_port})")
