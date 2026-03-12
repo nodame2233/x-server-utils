@@ -209,7 +209,9 @@ class ServerUtil(object):
             f"\n项目名称: {project_name}\n"
             f"局域网访问: http://{local_ip}:{port}\n"
             f"Swagger文档: http://{local_ip}:{port}/docs\n"
-            f"配置参数: host={host}, workers={workers}, app={app_target}, app_dir={app_dir}"
+            f"配置参数: host={host}, workers={workers}, app={app_target}, app_dir={app_dir}\n"
+            f"内部接口地址: {args.inner_url}\n"
+            f"外部库地址: {args.library}"
         )
 
         uvicorn.run(
