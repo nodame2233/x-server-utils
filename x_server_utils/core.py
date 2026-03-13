@@ -14,6 +14,11 @@ import requests
 import time
 import argparse
 import concurrent.futures
+import base64
+import io
+import json
+import openai
+from PIL import Image
 from loguru import logger
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -335,6 +340,239 @@ class ServerUtil(object):
                 process_time = time.time() - start_time
                 logger.error(f"[Req:{request_id}] 响应异常 | 耗时: {process_time:.3f}s | 异常信息: {str(e)}")
                 raise e
+
+
+class ModelClient(object):
+    def __init__(self, user_config: dict, cost_config: dict, prompt_config: dict):
+        self.user_config = user_config
+        self.cost_config = cost_config
+        self.prompt_config = prompt_config
+        self.client = self.connect_init()
+        self.model_name = 'openai'
+        self.task_name = None
+        self.model_id = None
+        self.finish_reason = None
+
+    def connect_init(self):
+        return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
+
+    def generate_content(self, task_name: str, user_input: str | list, timeout: int = 600):
+        self.task_name = task_name
+        llm_config = self.prompt_config[task_name]
+        sys_prompt = llm_config['prompt']
+        task_type = llm_config['task_type']
+        if task_type in ['image', 'doc']:
+            main_content = [
+                {
+                    "type": "text",
+                    "text": sys_prompt
+                },
+            ]
+            if not isinstance(user_input, list):
+                user_input = [user_input]
+            image_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{llm_config['mime_type']};base64,{b64}"
+                    }
+                }
+                for b64 in user_input
+            ]
+            main_content.extend(image_content)
+            messages = [
+                {
+                    "role": "user",
+                    "content": main_content
+                }
+            ]
+
+        elif task_type == 'text':
+            messages = [
+                {
+                    "role": "user",
+                    "content": user_input
+                },
+                {
+                    "role": "assistant",
+                    "content": sys_prompt
+                }
+            ]
+
+        else:
+            logger.error(f"不支持的任务类型: {task_type}")
+            return None, None
+
+        if not self.client:
+            self.client = self.connect_init()
+
+        try:
+            self.model_id = llm_config['model_id']
+            response = self.client.chat.completions.create(
+                model=self.model_id,
+                messages=messages,
+                temperature=llm_config['temperature'],
+                max_tokens=llm_config['maxOutputTokens'],
+                max_completion_tokens=llm_config['maxOutputTokens'],
+                top_p=llm_config['topP'],
+                response_format=llm_config['response_format'],
+                timeout=timeout
+            )
+            self.finish_reason = response.choices[0].finish_reason
+            if self.finish_reason != 'stop':
+                logger.error(f"大模型非正常截断，任务: {task_name}, 完成原因: {self.finish_reason}, 响应: {response}")
+                return None, None
+
+            return self.parse_model_response(response), self.record_token_cost(response)
+
+        except Exception as e:
+            logger.error(f"大模型调用失败: {str(e)}")
+            return None, None
+
+    def parse_model_response(self, raw_data) -> dict | list | str:
+        """
+        解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
+
+        Args:
+            raw_data: 大模型返回的原始数据。
+
+        Returns:
+            dict | list | str: 解析后的 JSON 数据（字典或列表），失败时返回原始文本。
+        """
+
+        def _extract_response_text(model: str, data) -> str:
+            """从不同模型的响应结构中提取文本内容"""
+            if model == 'openai':
+                return data.choices[0].message.content
+
+            elif model == 'gemini':
+                candidate = data.get('candidates', [{}])[0]
+                return candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
+
+            elif model in ('gpt', 'doubao'):
+                choice = data.get('choices', [{}])[0]
+                return choice.get('message', {}).get('content', '')
+
+            else:
+                logger.error(f"不支持的模型名称: {model}")
+                return ''
+
+        def _preprocess_text(text_ori: str) -> str:
+            """移除 JSON 标记和前后空白"""
+            text_ori = text_ori.strip()
+            return re.sub(r'^```(json)?|```$', '', text_ori, flags=re.IGNORECASE).strip()
+
+        def _try_parse_json(text_ori: str) -> dict | list | None:
+            """尝试多种方式解析 JSON"""
+            # 尝试 1：直接解析
+            try:
+                return json.loads(text_ori)
+            except json.JSONDecodeError:
+                pass
+
+            # 尝试 2：处理多行 JSON 或片段
+            if '\n' in text_ori:
+                normalized_text = re.sub(r'}\s*{', '},{', text_ori)
+                if not normalized_text.startswith('[') and '{' in normalized_text:
+                    normalized_text = f'[{normalized_text}]'
+                try:
+                    return json.loads(normalized_text)
+                except json.JSONDecodeError:
+                    pass
+
+            # 尝试 3：提取最外层 {} 或 [] 包裹的内容
+            for wrapper in ('{}', '[]'):
+                if wrapper[0] in text_ori and wrapper[-1] in text_ori:
+                    start = text_ori.index(wrapper[0])
+                    end = text_ori.rindex(wrapper[-1]) + 1
+                    try:
+                        return json.loads(text_ori[start:end])
+                    except json.JSONDecodeError:
+                        continue
+            return None
+
+        # 1. 提取模型响应中的文本内容
+        text = _extract_response_text(self.model_name, raw_data)
+        if not text:
+            logger.warning(f"模型 {self.model_name} 的响应中未找到有效文本内容")
+            return text
+
+        # 2. 预处理文本（移除 JSON 标记和空白）
+        text = _preprocess_text(text)
+
+        # 3. 尝试解析为 JSON
+        parsed_data = _try_parse_json(text)
+        if parsed_data is not None:
+            return parsed_data
+
+        logger.warning("无法解析为有效 JSON，返回原始文本")
+        return text
+
+    def record_token_cost(self, llm_response) -> dict:
+        """
+        记录Gemini API调用的token消耗和成本。
+        Args:
+            llm_response: 包含API调用的结果。
+        Returns:
+            dict: 更新后的结果字典，包含新增的'tokenCost'键，值为计算出的成本（单位：美元）。
+        """
+        try:
+            metrics = llm_response.metrics
+        except:  # noqa
+            usage = llm_response.usage
+            # logger.info(f"API 调用返回的 usage 参数: {usage}")
+            metrics = {
+                'input_token_count': usage.prompt_tokens,
+                'output_token_count': usage.completion_tokens,
+            }
+
+        model_cost_info = self.cost_config[self.model_id]
+        input_token_count = metrics.get('input_token_count', 0)
+        output_token_count = metrics.get('output_token_count', 0)
+        input_cost = model_cost_info['input'] / 1000000 * input_token_count
+        output_cost = model_cost_info['output'] / 1000000 * output_token_count
+        total_cost = (input_cost + output_cost) * self.cost_config['usd_to_cny']
+        usage_record = {
+            "task_name": self.task_name,
+            "input_token": input_token_count,
+            "output_token": output_token_count,
+            "cost": round(total_cost, 8),
+        }
+        preview = ModelClient.format_response_preview(llm_response)
+        logger.info(
+            f"任务: {self.task_name}, 输出: {preview}, "
+            f"完成原因: {self.finish_reason}, 消耗: {usage_record['cost']:.4f}元")
+        return usage_record
+
+    @staticmethod
+    def format_response_preview(response, max_preview=200):
+        """格式化响应内容预览
+
+        Args:
+            response: 响应内容
+            max_preview: 前后预览的最大字符数
+
+        Returns:
+            格式化后的预览字符串
+        """
+        response_str = str(response)
+        total_len = len(response_str)
+
+        if total_len == 0:
+            return "[空响应]"
+        elif total_len <= max_preview:
+            return response_str
+        elif total_len <= max_preview * 2:
+            return f"{response_str[:max_preview]} ... (后{total_len - max_preview}字符省略)"
+        else:
+            return (f"{response_str[:max_preview]} ... {response_str[-max_preview:]} "
+                    f"(总长度: {total_len}字符, 中间{total_len - max_preview * 2}字符省略)")
+
+    @staticmethod
+    def binary_to_base64(binary_data):
+        img_byte_arr = io.BytesIO()
+        Image.open(io.BytesIO(binary_data)).convert('RGB').save(img_byte_arr, format='PNG')
+        return base64.b64encode(img_byte_arr.getvalue()).decode("ascii")
 
 
 class StressTester(object):

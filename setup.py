@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="x-server-utils",  # PyPI 上的包名
-    version="0.2.2",
+    version="0.3.0",
     author="Xuan",
     author_email="786625468@qq.com",
     description="A collection of FastAPI Server Utilities and Stress Tester",
@@ -19,6 +19,8 @@ setup(
         "uvicorn",
         "requests>=2.32.4",
         "loguru",
+        "Pillow",
+        "openai"
     ],
     classifiers=[
         "Programming Language :: Python :: 3",
