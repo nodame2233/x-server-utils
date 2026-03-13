@@ -172,13 +172,13 @@ class ServerUtil(object):
         # 参数校验
         project_name = args.project
         if project_name not in PROJECT_CONFIG:
-            raise ValueError(f"无效的项目名称: {project_name}，可选值: {list(PROJECT_CONFIG.keys())}")
+            logger.warning(f'非预设项目: {project_name}，请确认项目配置是否正确，可选值: {list(PROJECT_CONFIG.keys())}')
 
         project_config = PROJECT_CONFIG.get(project_name, {})
 
         # 端口冲突检测
-        if args.port == default_port and project_config['port'] != default_port:
-            logger.warning(f"项目 {project_name} 推荐使用端口 {project_config['port']}，当前使用 {args.port}")
+        if args.port == default_port and project_config.get('port', default_port) != default_port:
+            logger.warning(f"项目 {project_name} 推荐使用端口 {project_config.get('port')}，当前使用 {args.port}")
 
         # 必需参数校验
         missing_params = []
