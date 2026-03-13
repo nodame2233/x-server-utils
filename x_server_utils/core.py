@@ -152,7 +152,7 @@ class ServerUtil(object):
         :param default_port: 默认端口号
         """
         parser = argparse.ArgumentParser(description="API Service")
-        parser.add_argument("-j", "--project", type=str, required=True, help="项目名称（必填）")
+        parser.add_argument("-j", "--project", type=str, default="ALL", help="项目名称")
         parser.add_argument("-H", "--host", type=str, default="0.0.0.0", help="绑定地址 (默认: 0.0.0.0)")
         parser.add_argument("-p", "--port", type=int, default=default_port, help=f"启动端口 (默认: {default_port})")
         parser.add_argument("-w", "--workers", type=int, default=1, help="工作进程数 (默认: 1)")
@@ -174,7 +174,7 @@ class ServerUtil(object):
         if project_name not in PROJECT_CONFIG:
             raise ValueError(f"无效的项目名称: {project_name}，可选值: {list(PROJECT_CONFIG.keys())}")
 
-        project_config = PROJECT_CONFIG[project_name]
+        project_config = PROJECT_CONFIG.get(project_name, {})
 
         # 端口冲突检测
         if args.port == default_port and project_config['port'] != default_port:
@@ -182,8 +182,8 @@ class ServerUtil(object):
 
         # 必需参数校验
         missing_params = []
-        for param in project_config['required_params']:
-            if not getattr(args, param.replace('inner_url', 'inner_url').replace('library', 'library')):
+        for param in project_config.get('required_params', []):
+            if not getattr(args, param, None):  # 使用默认值 None 避免属性不存在错误
                 missing_params.append(param)
 
         if missing_params:
