@@ -58,7 +58,9 @@ class ResponseCode:
     PARSING_FAILED = (310, "parsing failed")
     # 330-360 为文件错误，不重新解析
     FILE_ERROR = (330, "file error, unable to parse")
-    FILE_EMPTY = (340, "file is empty")
+    FILE_EMPTY = (335, "file is empty")
+    FILE_TYPE_UNSUPPORTED = (340, "unsupported file types")
+    FILE_LANG_UNSUPPORTED = (350, "unsupported file language")
     # 常规错误码
     FAIL = (400, "fail")
     UNAUTHORIZED = (401, "unauthorized")
