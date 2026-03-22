@@ -54,9 +54,12 @@ class ResponseCode:
     """响应状态码配置"""
     SUCCESS = (0, "success")
     ERROR = (300, "error")
-    # 新增响应状态码
+    # 310-329 为解析失败，可重新解析
     PARSING_FAILED = (310, "parsing failed")
+    # 330-360 为文件错误，不重新解析
     FILE_ERROR = (330, "file error, unable to parse")
+    FILE_EMPTY = (340, "file is empty")
+    # 常规错误码
     FAIL = (400, "fail")
     UNAUTHORIZED = (401, "unauthorized")
     NOT_FOUND = (404, "not found")
