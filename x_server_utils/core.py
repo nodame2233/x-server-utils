@@ -54,6 +54,9 @@ class ResponseCode:
     """响应状态码配置"""
     SUCCESS = (0, "success")
     ERROR = (300, "error")
+    # 新增响应状态码
+    PARSING_FAILED = (310, "parsing failed")
+    FILE_ERROR = (330, "file error, unable to parse")
     FAIL = (400, "fail")
     UNAUTHORIZED = (401, "unauthorized")
     NOT_FOUND = (404, "not found")
