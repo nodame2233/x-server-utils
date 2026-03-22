@@ -40,6 +40,10 @@ PROJECT_CONFIG = {
         'port': 2090,
         'required_params': [],
     },
+    'all': {
+        'port': 7000,
+        'required_params': ['inner_url', 'library'],
+    },
 }
 ENV_MAPPING = [
     ('project', 'PROJECT_NAME'),
@@ -159,13 +163,13 @@ class ServerUtil(object):
         return changelog_content, latest_version
 
     @staticmethod
-    def run_server(default_port: int = 8000):
+    def run_server(default_port: int = 7000):
         """
         Uvicorn 启动入口，支持跨平台与容器场景。
         :param default_port: 默认端口号
         """
         parser = argparse.ArgumentParser(description="API Service")
-        parser.add_argument("-j", "--project", type=str, default="ALL", help="项目名称")
+        parser.add_argument("-j", "--project", type=str, default="all", help="项目名称")
         parser.add_argument("-H", "--host", type=str, default="0.0.0.0", help="绑定地址 (默认: 0.0.0.0)")
         parser.add_argument("-p", "--port", type=int, default=default_port, help=f"启动端口 (默认: {default_port})")
         parser.add_argument("-w", "--workers", type=int, default=1, help="工作进程数 (默认: 1)")
@@ -348,35 +352,6 @@ class ServerUtil(object):
                 process_time = time.time() - start_time
                 logger.error(f"[Req:{request_id}] 响应异常 | 耗时: {process_time:.3f}s | 异常信息: {str(e)}")
                 raise e
-
-    @staticmethod
-    def validate_module_config(target_module: str):
-        """
-        根据模块名按需校验环境变量
-        """
-        # 定义模块与环境变量的依赖关系
-        # key 为模块名，value 为该模块必须依赖的环境变量列表
-        config_requirements = {
-            "fileparse": ["SERVICE_INNER_URL", "SERVICE_LIBRARY_URL"],
-            "chemparse": ["SERVICE_INNER_URL", "SERVICE_LIBRARY_URL"],
-            "patenthtml": []  # 假设这个模块不需要任何外部 URL
-        }
-
-        # 如果指定了具体模块，则检查该模块的依赖
-        # 如果没有匹配到模块（比如加载全部），则检查所有可能的依赖
-        required_keys = config_requirements.get(target_module, ["SERVICE_INNER_URL", "SERVICE_LIBRARY_URL"])
-
-        missing_keys = []
-        for key in required_keys:
-            if not os.environ.get(key):
-                missing_keys.append(key)
-
-        if missing_keys:
-            logger.critical(f"❌ 启动中断: 模块 [{target_module}] 缺少必要配置: {missing_keys}")
-            logger.error(f"请检查环境变量中是否设置了: {', '.join(missing_keys)}")
-            sys.exit(1)  # 发现不完整，直接自杀，不启动服务
-        else:
-            logger.info(f"✅ 模块 [{target_module}] 配置校验通过")
 
 
 class ModelClient(object):
