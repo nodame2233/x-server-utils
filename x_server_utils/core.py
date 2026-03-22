@@ -349,6 +349,35 @@ class ServerUtil(object):
                 logger.error(f"[Req:{request_id}] 响应异常 | 耗时: {process_time:.3f}s | 异常信息: {str(e)}")
                 raise e
 
+    @staticmethod
+    def validate_module_config(target_module: str):
+        """
+        根据模块名按需校验环境变量
+        """
+        # 定义模块与环境变量的依赖关系
+        # key 为模块名，value 为该模块必须依赖的环境变量列表
+        config_requirements = {
+            "fileparse": ["SERVICE_INNER_URL", "SERVICE_LIBRARY_URL"],
+            "chemparse": ["SERVICE_INNER_URL", "SERVICE_LIBRARY_URL"],
+            "patenthtml": []  # 假设这个模块不需要任何外部 URL
+        }
+
+        # 如果指定了具体模块，则检查该模块的依赖
+        # 如果没有匹配到模块（比如加载全部），则检查所有可能的依赖
+        required_keys = config_requirements.get(target_module, ["SERVICE_INNER_URL", "SERVICE_LIBRARY_URL"])
+
+        missing_keys = []
+        for key in required_keys:
+            if not os.environ.get(key):
+                missing_keys.append(key)
+
+        if missing_keys:
+            logger.critical(f"❌ 启动中断: 模块 [{target_module}] 缺少必要配置: {missing_keys}")
+            logger.error(f"请检查环境变量中是否设置了: {', '.join(missing_keys)}")
+            sys.exit(1)  # 发现不完整，直接自杀，不启动服务
+        else:
+            logger.info(f"✅ 模块 [{target_module}] 配置校验通过")
+
 
 class ModelClient(object):
     def __init__(self, user_config: dict, cost_config: dict, prompt_config: dict):
