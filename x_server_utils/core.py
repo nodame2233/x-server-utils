@@ -406,7 +406,7 @@ class ModelClient(object):
                     "content": user_input
                 },
                 {
-                    "role": "assistant",
+                    "role": "system",
                     "content": sys_prompt
                 }
             ]
