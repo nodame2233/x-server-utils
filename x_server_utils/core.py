@@ -526,7 +526,7 @@ class ModelClient(object):
         # 1. 提取模型响应中的文本内容
         text = _extract_response_text(self.model_name, raw_data)
         if not text:
-            logger.warning(f"模型 {self.model_name} 的响应中未找到有效文本内容")
+            logger.warning(f"模型 {self.model_id} 的响应中未找到有效文本内容")
             return text
 
         # 2. 预处理文本（移除 JSON 标记和空白）
@@ -572,7 +572,7 @@ class ModelClient(object):
         }
         preview = ModelClient.format_response_preview(llm_response)
         logger.info(
-            f"任务: {self.task_name}, 模型: {self.model_name}, 输出: {preview}, "
+            f"任务: {self.task_name}, 模型: {self.model_id}, 输出: {preview}, "
             f"完成原因: {self.finish_reason}, 消耗: {usage_record['cost']:.4f}元")
         return usage_record
 
