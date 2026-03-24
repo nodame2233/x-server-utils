@@ -368,7 +368,7 @@ class ModelClient(object):
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
-    def generate_content(self, task_name: str, user_input: str | list, timeout: int = 600):
+    def generate_content_bak(self, task_name: str, user_input: str | list, timeout: int = 600):
         self.task_name = task_name
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
@@ -428,6 +428,98 @@ class ModelClient(object):
                 max_completion_tokens=llm_config['maxOutputTokens'],
                 top_p=llm_config['topP'],
                 response_format=llm_config['response_format'],
+                timeout=timeout
+            )
+            self.finish_reason = response.choices[0].finish_reason
+            if self.finish_reason != 'stop':
+                logger.error(f"大模型非正常截断，任务: {task_name}, 完成原因: {self.finish_reason}, 响应: {response}")
+                return None, None
+
+            return self.parse_model_response(response), self.record_token_cost(response)
+
+        except Exception as e:
+            logger.error(f"大模型调用失败: {str(e)}")
+            return None, None
+
+    def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600):
+        self.task_name = task_name
+        llm_config = self.prompt_config[task_name]
+        sys_prompt = llm_config['prompt']
+        task_type = llm_config['task_type']
+
+        if task_type in ['image', 'doc', 'multi']:
+            # 1. 设置系统提示词
+            messages = [
+                {
+                    "role": "system",
+                    "content": sys_prompt
+                }
+            ]
+            user_content = []
+            # 2. 判断 user_input 是否为包含了文本和图片的多模态字典结构
+            if isinstance(user_input, dict):
+                # 提取并添加结构化文本
+                parsed_text = user_input.get("text")
+                if parsed_text:
+                    user_content.append({
+                        "type": "text",
+                        "text": parsed_text
+                    })
+                # 提取图片列表
+                images = user_input.get("doc") or user_input.get("image")
+                if not isinstance(images, list):
+                    images = [images]
+            # 3. 兼容旧逻辑：如果直接传入的是 list 或 str，默认全是图片
+            elif isinstance(user_input, str):
+                images = [user_input]
+            else:
+                images = user_input
+
+            # 4. 遍历添加图片
+            mime_type = llm_config.get('mime_type', 'image/png')
+            for b64 in images:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{b64}"
+                    }
+                })
+
+            # 5. 组合 User Message
+            messages.append({
+                "role": "user",
+                "content": user_content
+            })
+
+        elif task_type == 'text':
+            messages = [
+                {
+                    "role": "system",
+                    "content": sys_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_input
+                }
+            ]
+
+        else:
+            logger.error(f"不支持的任务类型: {task_type}")
+            return None, None
+
+        if not self.client:
+            self.client = self.connect_init()
+
+        try:
+            self.model_id = llm_config['model_id']
+            response = self.client.chat.completions.create(
+                model=self.model_id,
+                messages=messages,
+                temperature=llm_config['temperature'],
+                max_tokens=llm_config['maxOutputTokens'],
+                max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
+                top_p=llm_config['topP'],
+                response_format=llm_config.get('response_format', None),
                 timeout=timeout
             )
             self.finish_reason = response.choices[0].finish_reason
