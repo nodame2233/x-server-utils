@@ -644,7 +644,7 @@ class ModelClient(object):
         }
         preview = ModelClient.format_response_preview(llm_response)
         logger.info(
-            f"任务: {self.task_name}, 输出: {preview}, "
+            f"任务: {self.task_name}, 模型: {self.model_name}, 输出: {preview}, "
             f"完成原因: {self.finish_reason}, 消耗: {usage_record['cost']:.4f}元")
         return usage_record
 
