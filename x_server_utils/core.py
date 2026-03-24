@@ -438,7 +438,8 @@ class ModelClient(object):
             return self.parse_model_response(response), self.record_token_cost(response)
 
         except Exception as e:
-            logger.error(f"大模型调用失败: {str(e)}")
+            logger.error(f"模型 {self.model_name} 任务 {task_name} response_format "
+                         f"{llm_config['response_format']} 调用失败: {str(e)}")
             return None, None
 
     def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600):
