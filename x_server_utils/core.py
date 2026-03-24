@@ -457,8 +457,8 @@ class ModelClient(object):
             return self.parse_model_response(response), self.record_token_cost(response)
 
         except Exception as e:
-            logger.error(f"模型 {self.model_name} 任务 {task_name} response_format {llm_config['response_format']} "
-                         f"输入内容 {str(user_input)[:2000]} 调用失败: {str(e)}")
+            logger.error(f"模型 {self.model_id} 任务 {task_name} response_format {llm_config['response_format']} "
+                         f"输入内容 {str(user_input)[:200]} 调用失败: {str(e)}")
             return None, None
 
     def parse_model_response(self, raw_data) -> dict | list | str:
