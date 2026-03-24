@@ -361,15 +361,11 @@ class ModelClient(object):
         self.prompt_config = prompt_config
         self.client = self.connect_init()
         self.model_name = 'openai'
-        self.task_name = None
-        self.model_id = None
-        self.finish_reason = None
 
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
     def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600):
-        self.task_name = task_name
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
         task_type = llm_config['task_type']
@@ -437,10 +433,10 @@ class ModelClient(object):
         if not self.client:
             self.client = self.connect_init()
 
+        model_id = llm_config['model_id']
         try:
-            self.model_id = llm_config['model_id']
             response = self.client.chat.completions.create(
-                model=self.model_id,
+                model=model_id,
                 messages=messages,
                 temperature=llm_config['temperature'],
                 max_tokens=llm_config['maxOutputTokens'],
@@ -449,24 +445,27 @@ class ModelClient(object):
                 response_format=llm_config.get('response_format', None),
                 timeout=timeout
             )
-            self.finish_reason = response.choices[0].finish_reason
-            if self.finish_reason != 'stop':
-                logger.error(f"大模型非正常截断，任务: {task_name}, 完成原因: {self.finish_reason}, 响应: {response}")
+            finish_reason = response.choices[0].finish_reason
+            if finish_reason != 'stop':
+                logger.error(f"大模型非正常截断，任务: {task_name}, 完成原因: {finish_reason}, 响应: {response}")
                 return None, None
 
-            return self.parse_model_response(response), self.record_token_cost(response)
+            result = self.parse_model_response(response, model_id)
+            cost = self.record_token_cost(response, model_id, task_name, finish_reason)
+            return result, cost
 
         except Exception as e:
-            logger.error(f"模型 {self.model_id} 任务 {task_name} response_format {llm_config['response_format']} "
+            logger.error(f"模型 {model_id} 任务 {task_name} response_format {llm_config['response_format']} "
                          f"输入内容 {str(user_input)[:200]} 调用失败: {str(e)}")
             return None, None
 
-    def parse_model_response(self, raw_data) -> dict | list | str:
+    def parse_model_response(self, raw_data, model_id: str) -> dict | list | str:
         """
         解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
 
         Args:
             raw_data: 大模型返回的原始数据。
+            model_id: 模型 ID。
 
         Returns:
             dict | list | str: 解析后的 JSON 数据（字典或列表），失败时返回原始文本。
@@ -526,7 +525,7 @@ class ModelClient(object):
         # 1. 提取模型响应中的文本内容
         text = _extract_response_text(self.model_name, raw_data)
         if not text:
-            logger.warning(f"模型 {self.model_id} 的响应中未找到有效文本内容")
+            logger.warning(f"模型 {model_id} 的响应中未找到有效文本内容")
             return text
 
         # 2. 预处理文本（移除 JSON 标记和空白）
@@ -540,11 +539,14 @@ class ModelClient(object):
         logger.warning("无法解析为有效 JSON，返回原始文本")
         return text
 
-    def record_token_cost(self, llm_response) -> dict:
+    def record_token_cost(self, llm_response, model_id: str, task_name: str, finish_reason: str) -> dict:
         """
         记录Gemini API调用的token消耗和成本。
         Args:
             llm_response: 包含API调用的结果。
+            model_id: 模型 ID。
+            task_name: 任务名称。
+            finish_reason: 完成原因。
         Returns:
             dict: 更新后的结果字典，包含新增的'tokenCost'键，值为计算出的成本（单位：美元）。
         """
@@ -558,22 +560,22 @@ class ModelClient(object):
                 'output_token_count': usage.completion_tokens,
             }
 
-        model_cost_info = self.cost_config[self.model_id]
+        model_cost_info = self.cost_config[model_id]
         input_token_count = metrics.get('input_token_count', 0)
         output_token_count = metrics.get('output_token_count', 0)
         input_cost = model_cost_info['input'] / 1000000 * input_token_count
         output_cost = model_cost_info['output'] / 1000000 * output_token_count
         total_cost = (input_cost + output_cost) * self.cost_config['usd_to_cny']
         usage_record = {
-            "task_name": self.task_name,
+            "task_name": task_name,
             "input_token": input_token_count,
             "output_token": output_token_count,
             "cost": round(total_cost, 8),
         }
         preview = ModelClient.format_response_preview(llm_response)
         logger.info(
-            f"任务: {self.task_name}, 模型: {self.model_id}, 输出: {preview}, "
-            f"完成原因: {self.finish_reason}, 消耗: {usage_record['cost']:.4f}元")
+            f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, "
+            f"完成原因: {finish_reason}, 消耗: {usage_record['cost']:.4f}元")
         return usage_record
 
     @staticmethod
