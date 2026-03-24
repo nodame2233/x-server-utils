@@ -368,80 +368,6 @@ class ModelClient(object):
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
-    def generate_content_bak(self, task_name: str, user_input: str | list, timeout: int = 600):
-        self.task_name = task_name
-        llm_config = self.prompt_config[task_name]
-        sys_prompt = llm_config['prompt']
-        task_type = llm_config['task_type']
-        if task_type in ['image', 'doc']:
-            main_content = [
-                {
-                    "type": "text",
-                    "text": sys_prompt
-                },
-            ]
-            if not isinstance(user_input, list):
-                user_input = [user_input]
-            image_content = [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{llm_config['mime_type']};base64,{b64}"
-                    }
-                }
-                for b64 in user_input
-            ]
-            main_content.extend(image_content)
-            messages = [
-                {
-                    "role": "user",
-                    "content": main_content
-                }
-            ]
-
-        elif task_type == 'text':
-            messages = [
-                {
-                    "role": "user",
-                    "content": user_input
-                },
-                {
-                    "role": "system",
-                    "content": sys_prompt
-                }
-            ]
-
-        else:
-            logger.error(f"不支持的任务类型: {task_type}")
-            return None, None
-
-        if not self.client:
-            self.client = self.connect_init()
-
-        try:
-            self.model_id = llm_config['model_id']
-            response = self.client.chat.completions.create(
-                model=self.model_id,
-                messages=messages,
-                temperature=llm_config['temperature'],
-                max_tokens=llm_config['maxOutputTokens'],
-                max_completion_tokens=llm_config['maxOutputTokens'],
-                top_p=llm_config['topP'],
-                response_format=llm_config['response_format'],
-                timeout=timeout
-            )
-            self.finish_reason = response.choices[0].finish_reason
-            if self.finish_reason != 'stop':
-                logger.error(f"大模型非正常截断，任务: {task_name}, 完成原因: {self.finish_reason}, 响应: {response}")
-                return None, None
-
-            return self.parse_model_response(response), self.record_token_cost(response)
-
-        except Exception as e:
-            logger.error(f"模型 {self.model_name} 任务 {task_name} response_format "
-                         f"{llm_config['response_format']} 调用失败: {str(e)}")
-            return None, None
-
     def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600):
         self.task_name = task_name
         llm_config = self.prompt_config[task_name]
@@ -531,7 +457,8 @@ class ModelClient(object):
             return self.parse_model_response(response), self.record_token_cost(response)
 
         except Exception as e:
-            logger.error(f"大模型调用失败: {str(e)}")
+            logger.error(f"模型 {self.model_name} 任务 {task_name} response_format {llm_config['response_format']} "
+                         f"输入内容 {str(user_input)[:2000]} 调用失败: {str(e)}")
             return None, None
 
     def parse_model_response(self, raw_data) -> dict | list | str:
