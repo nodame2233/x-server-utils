@@ -60,6 +60,7 @@ class ResponseCode:
     ERROR = (300, "error")
     # 310-329 为解析失败，可重新解析
     PARSING_FAILED = (310, "parsing failed")
+    PARSING_EMPTY = (320, "parsing is empty")
     # 330-360 为文件错误，不重新解析
     FILE_ERROR = (330, "file error, unable to parse")
     FILE_EMPTY = (335, "file is empty")
