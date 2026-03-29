@@ -66,6 +66,7 @@ class ResponseCode:
     FILE_EMPTY = (335, "file is empty")
     FILE_TYPE_UNSUPPORTED = (340, "unsupported file types")
     FILE_LANG_UNSUPPORTED = (350, "unsupported file language")
+    TIMEOUT = (360, "timeout 600s")
     # 常规错误码
     FAIL = (400, "fail")
     UNAUTHORIZED = (401, "unauthorized")
