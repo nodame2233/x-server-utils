@@ -57,13 +57,15 @@ ENV_MAPPING = [
 class ResponseCode:
     """响应状态码配置"""
     SUCCESS = (0, "success")
+    SUCCESS_BUT_EMPTY = (0, "success, molecular structure is empty")
     ERROR = (300, "error")
-    # 310-329 为解析失败，可重新解析
+    # 310-329 为解析失败，status=5，可重新解析
     PARSING_FAILED = (310, "parsing failed")
-    # 330-360 为文件错误，不重新解析
+    # PARSING_EMPTY = (320, "parsing is empty")
+    # 330-360 为文件错误，status=7，不重新解析
     FILE_ERROR = (330, "file error, unable to parse")
     FILE_EMPTY = (335, "file is empty")
-    PARSING_EMPTY = (336, "parsing is empty")
+    # PARSING_EMPTY = (336, "parsing is empty")
     FILE_TYPE_UNSUPPORTED = (340, "unsupported file types")
     FILE_LANG_UNSUPPORTED = (350, "unsupported file language")
     TIMEOUT_ALREADY = (355, "already timeout, task failed")
