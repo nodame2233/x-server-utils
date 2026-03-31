@@ -370,7 +370,7 @@ class ModelClient(object):
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
-    def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600):
+    def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600, max_retries: int = 2):
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
         task_type = llm_config['task_type']
@@ -439,30 +439,36 @@ class ModelClient(object):
             self.client = self.connect_init()
 
         model_id = llm_config['model_id']
-        try:
-            response = self.client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                temperature=llm_config['temperature'],
-                max_tokens=llm_config['maxOutputTokens'],
-                max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
-                top_p=llm_config['topP'],
-                response_format=llm_config.get('response_format', None),
-                timeout=timeout
-            )
-            finish_reason = response.choices[0].finish_reason
-            if finish_reason != 'stop':
-                logger.error(f"大模型非正常截断，任务: {task_name}, 完成原因: {finish_reason}, 响应: {response}")
-                return None, None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model_id,
+                    messages=messages,
+                    temperature=llm_config['temperature'],
+                    max_tokens=llm_config['maxOutputTokens'],
+                    max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
+                    top_p=llm_config['topP'],
+                    frequency_penalty=llm_config['frequencyPenalty'],
+                    response_format=llm_config.get('response_format', None),
+                    timeout=timeout
+                )
+                finish_reason = response.choices[0].finish_reason
+                if finish_reason == 'stop':
+                    result = self.parse_model_response(response, model_id)
+                    cost = self.record_token_cost(response, model_id, task_name, finish_reason)
+                    return result, cost
+                else:
+                    logger.error(f"大模型吞吐异常，任务: {task_name}, 完成原因: {finish_reason}, 响应: {response}")
 
-            result = self.parse_model_response(response, model_id)
-            cost = self.record_token_cost(response, model_id, task_name, finish_reason)
-            return result, cost
+            except Exception as e:
+                logger.error(f"模型 {model_id} 任务 {task_name} response_format {llm_config['response_format']} "
+                             f"输入内容 {str(user_input)[:200]} 调用失败: {str(e)}")
 
-        except Exception as e:
-            logger.error(f"模型 {model_id} 任务 {task_name} response_format {llm_config['response_format']} "
-                         f"输入内容 {str(user_input)[:200]} 调用失败: {str(e)}")
-            return None, None
+            if attempt < max_retries - 1:
+                logger.warning(f"模型 {model_id} 任务: {task_name} 解析失败，重试 {attempt + 1}/{max_retries - 1} ...")
+
+        logger.error(f"达到最大重试次数，放弃任务: {task_name}")
+        return None, None
 
     def parse_model_response(self, raw_data, model_id: str) -> dict | list | str:
         """
