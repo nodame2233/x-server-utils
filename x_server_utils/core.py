@@ -4,6 +4,8 @@ import os
 import traceback
 import sys
 from pathlib import Path
+
+import dirtyjson
 from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.exceptions import RequestValidationError, HTTPException
 from starlette.responses import JSONResponse
@@ -506,13 +508,33 @@ class ModelClient(object):
 
         def _try_parse_json(text_ori: str) -> dict | list | None:
             """尝试多种方式解析 JSON"""
+            # 准备工作：如果是空的字符串直接返回
+            if not text_ori or not any(c in text_ori for c in '{['):
+                return None
+
             # 尝试 1：直接解析
             try:
                 return json.loads(text_ori)
             except json.JSONDecodeError:
                 pass
 
-            # 尝试 2：处理多行 JSON 或片段
+            # 尝试 2：使用 dirtyjson 解析 (强力兜底)
+            # 它能处理：末尾多余符号、缺少括号、单引号、非转义字符等
+            try:
+                result = dirtyjson.loads(text_ori)
+                # dirtyjson 返回的是 AttributedDict 或 AttributedList
+                # 转换为标准 dict/list 以保持程序一致性
+                if isinstance(result, (dict, list)):
+                    # 通过重新 dump/load 或者递归转换确保类型纯净
+                    # 这里推荐直接返回，因为 AttributedDict 兼容 dict 接口
+                    # json.loads(json.dumps(result))
+                    logger.success(f"dirtyjson 解析成功: {json.dumps(result)[:200]} ...")
+                    return result
+            except Exception as e:
+                logger.debug(f"dirtyjson 解析失败: {e}")
+                pass
+
+            # 尝试 3：处理多行 JSON 或片段
             if '\n' in text_ori:
                 normalized_text = re.sub(r'}\s*{', '},{', text_ori)
                 if not normalized_text.startswith('[') and '{' in normalized_text:
@@ -522,15 +544,22 @@ class ModelClient(object):
                 except json.JSONDecodeError:
                     pass
 
-            # 尝试 3：提取最外层 {} 或 [] 包裹的内容
+            # 尝试 4：提取最外层 {} 或 [] 包裹的内容
             for wrapper in ('{}', '[]'):
-                if wrapper[0] in text_ori and wrapper[-1] in text_ori:
-                    start = text_ori.index(wrapper[0])
-                    end = text_ori.rindex(wrapper[-1]) + 1
-                    try:
-                        return json.loads(text_ori[start:end])
-                    except json.JSONDecodeError:
-                        continue
+                try:
+                    if wrapper[0] in text_ori and wrapper[-1] in text_ori:
+                        start = text_ori.find(wrapper[0])
+                        end = text_ori.rfind(wrapper[-1]) + 1
+                        if start < end:
+                            substring = text_ori[start:end]
+                            # 对提取出的子串再次尝试标准解析和 dirty 采样
+                            try:
+                                return json.loads(substring)
+                            except:  # noqa
+                                return dirtyjson.loads(substring)
+                except Exception:  # noqa
+                    continue
+
             return None
 
         # 1. 提取模型响应中的文本内容
