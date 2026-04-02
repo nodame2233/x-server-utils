@@ -452,9 +452,9 @@ class ModelClient(object):
                     max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
                     top_p=llm_config['topP'],
                     frequency_penalty=llm_config.get('frequencyPenalty'),
-                    response_format=llm_config.get('response_format', None),
+                    response_format=llm_config.get('response_format'),
                     timeout=timeout,
-                    reasoning_effort=llm_config.get('thinkingLevel', None)
+                    reasoning_effort=llm_config.get('thinkingLevel')
                 )
                 finish_reason = response.choices[0].finish_reason
                 if finish_reason == 'stop':

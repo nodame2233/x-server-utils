@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="x-server-utils",  # PyPI 上的包名
-    version="0.4.2",
+    version="0.4.3",
     author="Xuan",
     author_email="786625468@qq.com",
     description="A collection of FastAPI Server Utilities and Stress Tester",
