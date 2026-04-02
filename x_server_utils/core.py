@@ -453,7 +453,8 @@ class ModelClient(object):
                     top_p=llm_config['topP'],
                     frequency_penalty=llm_config.get('frequencyPenalty'),
                     response_format=llm_config.get('response_format', None),
-                    timeout=timeout
+                    timeout=timeout,
+                    reasoning_effort=llm_config.get('thinkingLevel', None)
                 )
                 finish_reason = response.choices[0].finish_reason
                 if finish_reason == 'stop':
