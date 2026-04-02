@@ -372,7 +372,8 @@ class ModelClient(object):
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
-    def generate_content(self, task_name: str, user_input: str | list | dict, timeout: int = 600, max_retries: int = 2):
+    def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
+                         timeout: int = 600, max_retries: int = 2):
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
         task_type = llm_config['task_type']
@@ -440,7 +441,7 @@ class ModelClient(object):
         if not self.client:
             self.client = self.connect_init()
 
-        model_id = llm_config['model_id']
+        model_id = model_id or llm_config['model_id']
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -450,7 +451,7 @@ class ModelClient(object):
                     max_tokens=llm_config['maxOutputTokens'],
                     max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
                     top_p=llm_config['topP'],
-                    frequency_penalty=llm_config['frequencyPenalty'],
+                    frequency_penalty=llm_config.get('frequencyPenalty'),
                     response_format=llm_config.get('response_format', None),
                     timeout=timeout
                 )
