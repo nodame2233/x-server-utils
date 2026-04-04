@@ -466,7 +466,7 @@ class ModelClient(object):
 
             except Exception as e:
                 logger.error(f"模型 {model_id} 任务 {task_name} response_format {llm_config['response_format']} "
-                             f"输入内容 {str(user_input)[:200]} 调用失败: {str(e)}")
+                             f"输入内容 {str(user_input)[:200]} 调用失败: {str(e)}\n{traceback.format_exc()}")
 
             if attempt < max_retries - 1:
                 logger.warning(f"模型 {model_id} 任务: {task_name} 解析失败，重试 {attempt + 1}/{max_retries - 1} ...")
