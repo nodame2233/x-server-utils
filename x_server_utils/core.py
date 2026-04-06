@@ -367,13 +367,12 @@ class ModelClient(object):
         self.cost_config = cost_config
         self.prompt_config = prompt_config
         self.client = self.connect_init()
-        self.model_name = 'openai'
 
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
     def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
-                         timeout: int = 600, max_retries: int = 2):
+                         timeout: int = 600, max_retries: int = 2, mode: str = 'formal'):
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
         task_type = llm_config['task_type']
@@ -444,21 +443,56 @@ class ModelClient(object):
         model_id = model_id or llm_config['model_id']
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
-                    model=model_id,
-                    messages=messages,
-                    temperature=llm_config['temperature'],
-                    max_tokens=llm_config['maxOutputTokens'],
-                    max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
-                    top_p=llm_config['topP'],
-                    frequency_penalty=llm_config.get('frequencyPenalty'),
-                    response_format=llm_config.get('response_format'),
-                    timeout=timeout,
-                    reasoning_effort=llm_config.get('thinkingLevel')
-                )
-                finish_reason = response.choices[0].finish_reason
+                if mode == 'test':
+                    payload = {
+                        "contents": [
+                            {
+                                "role": "model",
+                                "parts": [
+                                    {
+                                        "text": sys_prompt
+                                    }
+                                ]
+                            },
+                            {
+                                "role": "user",
+                                "parts": [
+                                    {
+                                        "text": user_input
+                                    }
+                                ]
+                            }
+                        ],
+                        "generationConfig": {
+                            "temperature": llm_config['temperature'],
+                            "maxOutputTokens": llm_config['maxOutputTokens'],
+                            "topP": llm_config['topP'],
+                            "frequencyPenalty": 0.0,
+                            "responseMimeType": "application/json"
+                        }
+                    }
+                    response = requests.post(url=self.user_config['temp_url'], json=payload)
+                    finish_reason = response.json().get('candidates')[0].get('finishReason').lower()
+                    model_name = 'gemini'
+
+                else:
+                    response = self.client.chat.completions.create(
+                        model=model_id,
+                        messages=messages,
+                        temperature=llm_config['temperature'],
+                        max_tokens=llm_config['maxOutputTokens'],
+                        max_completion_tokens=llm_config.get('maxOutputTokens', 4096),  # 兼容新旧 API
+                        top_p=llm_config['topP'],
+                        frequency_penalty=llm_config.get('frequencyPenalty'),
+                        response_format=llm_config.get('response_format'),
+                        timeout=timeout,
+                        reasoning_effort=llm_config.get('thinkingLevel')
+                    )
+                    finish_reason = response.choices[0].finish_reason
+                    model_name = 'openai'
+
                 if finish_reason == 'stop':
-                    result = self.parse_model_response(response, model_id)
+                    result = ModelClient.parse_model_response(response, model_name, model_id)
                     cost = self.record_token_cost(response, model_id, task_name, finish_reason)
                     return result, cost
                 else:
@@ -474,12 +508,14 @@ class ModelClient(object):
         logger.error(f"达到最大重试次数，放弃任务: {task_name}")
         return None, None
 
-    def parse_model_response(self, raw_data, model_id: str) -> dict | list | str:
+    @staticmethod
+    def parse_model_response(raw_data, model_name: str, model_id: str) -> dict | list | str:
         """
         解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
 
         Args:
             raw_data: 大模型返回的原始数据。
+            model_name: 模型名称。
             model_id: 模型 ID。
 
         Returns:
@@ -565,7 +601,7 @@ class ModelClient(object):
             return None
 
         # 1. 提取模型响应中的文本内容
-        text = _extract_response_text(self.model_name, raw_data)
+        text = _extract_response_text(model_name, raw_data)
         if not text:
             logger.warning(f"模型 {model_id} 的响应中未找到有效文本内容")
             return text
