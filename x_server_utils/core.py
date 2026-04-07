@@ -638,23 +638,80 @@ class ModelClient(object):
                 'output_token_count': usage.completion_tokens,
             }
 
-        model_cost_info = self.cost_config[model_id]
-        input_token_count = metrics.get('input_token_count', 0)
-        output_token_count = metrics.get('output_token_count', 0)
-        input_cost = model_cost_info['input'] / 1000000 * input_token_count
-        output_cost = model_cost_info['output'] / 1000000 * output_token_count
-        total_cost = (input_cost + output_cost) * self.cost_config['usd_to_cny']
-        usage_record = {
-            "task_name": task_name,
-            "input_token": input_token_count,
-            "output_token": output_token_count,
-            "cost": round(total_cost, 8),
-        }
+        usage_record = {}
+        if metrics:
+            model_cost_info = self.cost_config[model_id]
+            input_token_count = metrics.get('input_token_count', 0)
+            output_token_count = metrics.get('output_token_count', 0)
+            input_cost = model_cost_info['input'] / 1000000 * input_token_count
+            output_cost = model_cost_info['output'] / 1000000 * output_token_count
+            total_cost = (input_cost + output_cost) * self.cost_config['usd_to_cny']
+            usage_record = {
+                "task_name": task_name,
+                "input_token": input_token_count,
+                "output_token": output_token_count,
+                "cost": round(total_cost, 8),
+            }
+        else:
+            try:
+                usage_record = self.record_token_cost_gemini_style(llm_response, model_id, task_name, finish_reason)
+            except Exception as e:
+                logger.warning(f"任务: {task_name}, 模型: {model_id} 解析token信息失败，{e}\n{traceback.format_exc()}")
+
         preview = ModelClient.format_response_preview(llm_response)
         logger.info(
             f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, "
-            f"完成原因: {finish_reason}, 消耗: {usage_record['cost']:.4f}元")
+            f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元")
         return usage_record
+
+    def record_token_cost_gemini_style(self, response, model_id: str, task_name: str,
+                                       finish_reason: str) -> dict:
+        """简化版 Gemini Token 计费逻辑"""
+        response_json = response.json()
+        meta = response_json.get('usageMetadata', {})
+        cfg = self.cost_config.get(model_id, {})
+        usd_to_cny = self.cost_config.get('usd_to_cny', 6.88)
+
+        # 辅助函数：优先从明细提取，否则取总数
+        def get_tokens(details, total_key, modalities=None):
+            if modalities is None:
+                modalities = ['TEXT', 'IMAGE', 'DOCUMENT']
+            if details:
+                return sum(d.get('tokenCount', 0) for d in details if d.get('modality') in modalities)
+            return meta.get(total_key, 0)
+
+        # 1. 计算输入
+        in_tokens = get_tokens(meta.get('promptTokensDetails'), 'promptTokenCount')
+        in_cost = in_tokens * (cfg.get('input', 0) / 1e6)
+
+        # 2. 计算输出
+        c_details = meta.get('candidatesTokensDetails', [])
+        thoughts = meta.get('thoughtsTokenCount', 0)
+
+        if model_id == 'gemini-2.5-flash-image-preview' and c_details:
+            # 特殊逻辑：图像按张数/等效Token计费，文本(含思考)按量计费
+            img_tk = get_tokens(c_details, '', ['IMAGE'])
+            txt_tk = get_tokens(c_details, '', ['TEXT']) + thoughts
+            img_cost = (img_tk / cfg.get('avg_image_cost', 1)) * cfg.get('image_output', 0)
+            out_cost = img_cost + (txt_tk * (cfg.get('output', 0) / 1e6))
+            out_tokens = img_tk + txt_tk
+        else:
+            # 通用逻辑
+            out_tokens = get_tokens(c_details, 'candidatesTokenCount') + thoughts
+            out_cost = out_tokens * (cfg.get('output', 0) / 1e6)
+
+        # 3. 汇总结果
+        total_cost_cny = round((in_cost + out_cost) * usd_to_cny, 8)
+        res = {
+            "task_name": task_name,
+            "input_token": in_tokens,
+            "output_token": out_tokens,
+            "cost": total_cost_cny
+        }
+
+        logger.info(f"GE解析[{task_name}] 消耗: {in_tokens}in/{out_tokens}out, "
+                    f"花费: ¥{total_cost_cny:.4f}, 完成原因: {finish_reason}")
+        return res
 
     @staticmethod
     def format_response_preview(response, max_preview=200):
