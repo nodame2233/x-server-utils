@@ -528,8 +528,9 @@ class ModelClient(object):
                 return data.choices[0].message.content
 
             elif model == 'gemini':
-                candidate = data.get('candidates', [{}])[0]
-                return candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
+                return data.json()['candidates'][0]['content']['parts'][0]['text']
+                # candidate = data.json().get('candidates', [{}])[0]
+                # return candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
 
             elif model in ('gpt', 'doubao'):
                 choice = data.get('choices', [{}])[0]
