@@ -372,29 +372,22 @@ class ModelClient(object):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
     def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
-                         timeout: int = 600, max_retries: int = 2, mode: str = 'formal'):
+                         timeout: int = 180, max_retries: int = 2, mode: str = 'formal'):
+        start_time = time.time()
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
         task_type = llm_config['task_type']
 
         if task_type in ['image', 'doc', 'multi']:
             # 1. 设置系统提示词
-            messages = [
-                {
-                    "role": "system",
-                    "content": sys_prompt
-                }
-            ]
+            messages = [{"role": "system", "content": sys_prompt}]
             user_content = []
             # 2. 判断 user_input 是否为包含了文本和图片的多模态字典结构
             if isinstance(user_input, dict):
                 # 提取并添加结构化文本
                 parsed_text = user_input.get("text")
                 if parsed_text:
-                    user_content.append({
-                        "type": "text",
-                        "text": parsed_text
-                    })
+                    user_content.append({"type": "text", "text": parsed_text})
                 # 提取图片列表
                 images = user_input.get("doc") or user_input.get("image")
                 if not isinstance(images, list):
@@ -408,30 +401,12 @@ class ModelClient(object):
             # 4. 遍历添加图片
             mime_type = llm_config.get('mime_type', 'image/png')
             for b64 in images:
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{b64}"
-                    }
-                })
-
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}})
             # 5. 组合 User Message
-            messages.append({
-                "role": "user",
-                "content": user_content
-            })
+            messages.append({"role": "user", "content": user_content})
 
         elif task_type == 'text':
-            messages = [
-                {
-                    "role": "system",
-                    "content": sys_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_input
-                }
-            ]
+            messages = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_input}]
 
         else:
             logger.error(f"不支持的任务类型: {task_type}")
@@ -446,33 +421,20 @@ class ModelClient(object):
                 if mode == 'test':
                     payload = {
                         "contents": [
-                            {
-                                "role": "model",
-                                "parts": [
-                                    {
-                                        "text": sys_prompt
-                                    }
-                                ]
-                            },
-                            {
-                                "role": "user",
-                                "parts": [
-                                    {
-                                        "text": user_input
-                                    }
-                                ]
-                            }
+                            {"role": "model", "parts": [{"text": sys_prompt}]},
+                            {"role": "user", "parts": [{"text": user_input}]}
                         ],
                         "generationConfig": {
-                            "temperature": llm_config['temperature'],
-                            "maxOutputTokens": llm_config['maxOutputTokens'],
-                            "topP": llm_config['topP'],
-                            "frequencyPenalty": 0.0,
-                            "responseMimeType": "application/json"
+                            "temperature": llm_config['temperature'], "maxOutputTokens": llm_config['maxOutputTokens'],
+                            "topP": llm_config['topP'], "frequencyPenalty": 0.0, "responseMimeType": "application/json"
                         }
                     }
-                    response = requests.post(url=self.user_config['temp_url'], json=payload)
-                    finish_reason = response.json().get('candidates')[0].get('finishReason').lower()
+                    response = requests.post(url=self.user_config['temp_url'], json=payload, timeout=timeout)
+                    response = response.json()
+                    logger.info(f"Response: {response}")
+                    finish_reason = None
+                    if response:
+                        finish_reason = response.get('candidates')[0].get('finishReason').lower()
                     model_name = 'gemini'
 
                 else:
@@ -493,7 +455,7 @@ class ModelClient(object):
 
                 if finish_reason == 'stop':
                     result = ModelClient.parse_model_response(response, model_name, model_id)
-                    cost = self.record_token_cost(response, model_id, task_name, finish_reason)
+                    cost = self.record_token_cost(response, model_id, task_name, finish_reason, start_time)
                     return result, cost
                 else:
                     logger.error(f"大模型吞吐异常，任务: {task_name}, 完成原因: {finish_reason}, 响应: {response}")
@@ -505,7 +467,8 @@ class ModelClient(object):
             if attempt < max_retries - 1:
                 logger.warning(f"模型 {model_id} 任务: {task_name} 解析失败，重试 {attempt + 1}/{max_retries - 1} ...")
 
-        logger.error(f"达到最大重试次数，放弃任务: {task_name}")
+        spend_time = round(time.time() - start_time, 2)
+        logger.error(f"达到最大重试次数，放弃任务: {task_name}, 耗时: {spend_time}")
         return None, None
 
     @staticmethod
@@ -528,8 +491,8 @@ class ModelClient(object):
                 return data.choices[0].message.content
 
             elif model == 'gemini':
-                return data.json()['candidates'][0]['content']['parts'][0]['text']
-                # candidate = data.json().get('candidates', [{}])[0]
+                return data['candidates'][0]['content']['parts'][0]['text']
+                # candidate = data.get('candidates', [{}])[0]
                 # return candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
 
             elif model in ('gpt', 'doubao'):
@@ -618,7 +581,7 @@ class ModelClient(object):
         logger.warning("无法解析为有效 JSON，返回原始文本")
         return text
 
-    def record_token_cost(self, llm_response, model_id: str, task_name: str, finish_reason: str) -> dict:
+    def record_token_cost(self, llm_response, model_id: str, task_name: str, finish_reason: str, start_time) -> dict:
         """
         记录Gemini API调用的token消耗和成本。
         Args:
@@ -626,18 +589,22 @@ class ModelClient(object):
             model_id: 模型 ID。
             task_name: 任务名称。
             finish_reason: 完成原因。
+            start_time: 开始时间戳。
         Returns:
             dict: 更新后的结果字典，包含新增的'tokenCost'键，值为计算出的成本（单位：美元）。
         """
         try:
             metrics = llm_response.metrics
         except:  # noqa
-            usage = llm_response.usage
-            # logger.info(f"API 调用返回的 usage 参数: {usage}")
-            metrics = {
-                'input_token_count': usage.prompt_tokens,
-                'output_token_count': usage.completion_tokens,
-            }
+            try:
+                usage = llm_response.usage
+                # logger.info(f"API 调用返回的 usage 参数: {usage}")
+                metrics = {
+                    'input_token_count': usage.prompt_tokens,
+                    'output_token_count': usage.completion_tokens,
+                }
+            except:  # noqa
+                metrics = None
 
         usage_record = {}
         if metrics:
@@ -660,16 +627,16 @@ class ModelClient(object):
                 logger.warning(f"任务: {task_name}, 模型: {model_id} 解析token信息失败，{e}\n{traceback.format_exc()}")
 
         preview = ModelClient.format_response_preview(llm_response)
+        spend_time = round(start_time - time.time(), 2)
         logger.info(
             f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, "
-            f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元")
+            f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元, 耗时：{spend_time}")
         return usage_record
 
     def record_token_cost_gemini_style(self, response, model_id: str, task_name: str,
                                        finish_reason: str) -> dict:
         """简化版 Gemini Token 计费逻辑"""
-        response_json = response.json()
-        meta = response_json.get('usageMetadata', {})
+        meta = response.get('usageMetadata', {})
         cfg = self.cost_config.get(model_id, {})
         usd_to_cny = self.cost_config.get('usd_to_cny', 6.88)
 
