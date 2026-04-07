@@ -600,7 +600,6 @@ class ModelClient(object):
         except:  # noqa
             try:
                 usage = llm_response.usage
-                # logger.info(f"API 调用返回的 usage 参数: {usage}")
                 metrics = {
                     'input_token_count': usage.prompt_tokens,
                     'output_token_count': usage.completion_tokens,
@@ -629,7 +628,8 @@ class ModelClient(object):
                 logger.warning(f"任务: {task_name}, 模型: {model_id} 解析token信息失败，{e}\n{traceback.format_exc()}")
 
         preview = ModelClient.format_response_preview(llm_response)
-        spend_time = round(start_time - time.time(), 2)
+        spend_time = round(time.time() - start_time, 2)
+        usage_record['spend_time'] = spend_time
         logger.info(
             f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, "
             f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元, 耗时：{spend_time}")
