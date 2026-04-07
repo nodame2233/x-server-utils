@@ -457,7 +457,7 @@ class ModelClient(object):
 
                 if finish_reason == 'stop':
                     result = ModelClient.parse_model_response(response, model_name, model_id)
-                    cost = self.record_token_cost(response, model_id, task_name, finish_reason, start_time)
+                    cost = self.record_token_cost(response, model_id, task_name, finish_reason, start_time, mode)
                     return result, cost
                 else:
                     logger.error(f"大模型吞吐异常，任务: {task_name}, 完成原因: {finish_reason}, 响应: {response}")
@@ -583,7 +583,8 @@ class ModelClient(object):
         logger.warning("无法解析为有效 JSON，返回原始文本")
         return text
 
-    def record_token_cost(self, llm_response, model_id: str, task_name: str, finish_reason: str, start_time) -> dict:
+    def record_token_cost(self, llm_response, model_id: str, task_name: str,
+                          finish_reason: str, start_time: float, mode: str = None) -> dict:
         """
         记录Gemini API调用的token消耗和成本。
         Args:
@@ -592,6 +593,7 @@ class ModelClient(object):
             task_name: 任务名称。
             finish_reason: 完成原因。
             start_time: 开始时间戳。
+            mode: 记录模式，'formal' 或 'test'。
         Returns:
             dict: 更新后的结果字典，包含新增的'tokenCost'键，值为计算出的成本（单位：美元）。
         """
@@ -632,7 +634,7 @@ class ModelClient(object):
         usage_record['spend_time'] = spend_time
         logger.info(
             f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, "
-            f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元, 耗时：{spend_time}")
+            f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元, 耗时：{spend_time}秒, 模式: {mode}")
         return usage_record
 
     def record_token_cost_gemini_style(self, response, model_id: str, task_name: str,
