@@ -431,10 +431,12 @@ class ModelClient(object):
                     }
                     response = requests.post(url=self.user_config['temp_url'], json=payload, timeout=timeout)
                     response = response.json()
-                    logger.info(f"Response: {response}")
                     finish_reason = None
                     if response:
-                        finish_reason = response.get('candidates')[0].get('finishReason').lower()
+                        try:
+                            finish_reason = response.get('candidates')[0].get('finishReason').lower()
+                        except:  # noqa
+                            pass
                     model_name = 'gemini'
 
                 else:
