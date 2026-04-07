@@ -372,7 +372,7 @@ class ModelClient(object):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
     def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
-                         timeout: int = 180, max_retries: int = 2, mode: str = 'formal'):
+                         timeout: int = 300, max_retries: int = 2, mode: str = 'formal'):
         start_time = time.time()
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
