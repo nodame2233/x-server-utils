@@ -686,7 +686,7 @@ class ModelClient(object):
         return res
 
     @staticmethod
-    def format_response_preview(response, max_preview=200):
+    def format_response_preview(response, max_preview=3000):
         """格式化响应内容预览
 
         Args:
