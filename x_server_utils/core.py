@@ -367,12 +367,13 @@ class ModelClient(object):
         self.cost_config = cost_config
         self.prompt_config = prompt_config
         self.client = self.connect_init()
+        self.model_name = 'openai'
 
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
     def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
-                         timeout: int = 300, max_retries: int = 2, mode: str = 'formal'):
+                         timeout: int = 300, max_retries: int = 2):
         start_time = time.time()
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
@@ -418,11 +419,37 @@ class ModelClient(object):
         model_id = model_id or llm_config['model_id']
         for attempt in range(max_retries):
             try:
-                if mode == 'test':
+                if self.model_name == 'gemini':
+                    user_parts = []
+                    if isinstance(user_input, str):
+                        user_parts.append({"text": user_input})
+
+                    elif isinstance(user_input, dict):
+                        text_input = user_input.get("text")
+                        doc_input = user_input.get("doc")
+                        image_input = user_input.get("image")
+                        user_parts.append({"text": text_input})
+                        if doc_input:
+                            for part in doc_input:
+                                user_parts.append({
+                                    "inline_data": {
+                                        "mime_type": 'application/pdf',
+                                        "data": part
+                                    }
+                                })
+                        if image_input:
+                            for part in image_input:
+                                user_parts.append({
+                                    "inline_data": {
+                                        "mime_type": 'image/png',
+                                        "data": part
+                                    }
+                                })
+
                     payload = {
                         "contents": [
                             {"role": "model", "parts": [{"text": sys_prompt}]},
-                            {"role": "user", "parts": [{"text": user_input}]}
+                            {"role": "user", "parts": user_parts}
                         ],
                         "generationConfig": {
                             "temperature": llm_config['temperature'], "maxOutputTokens": llm_config['maxOutputTokens'],
@@ -437,7 +464,6 @@ class ModelClient(object):
                             finish_reason = response.get('candidates')[0].get('finishReason').lower()
                         except:  # noqa
                             pass
-                    model_name = 'gemini'
 
                 else:
                     response = self.client.chat.completions.create(
@@ -453,11 +479,11 @@ class ModelClient(object):
                         reasoning_effort=llm_config.get('thinkingLevel')
                     )
                     finish_reason = response.choices[0].finish_reason
-                    model_name = 'openai'
 
                 if finish_reason == 'stop':
-                    result = ModelClient.parse_model_response(response, model_name, model_id)
-                    cost = self.record_token_cost(response, model_id, task_name, finish_reason, start_time, mode)
+                    result = ModelClient.parse_model_response(response, self.model_name, model_id)
+                    cost = self.record_token_cost(
+                        response, model_id, task_name, finish_reason, start_time, self.model_name)
                     return result, cost
                 else:
                     logger.error(f"大模型吞吐异常，任务: {task_name}, 完成原因: {finish_reason}, 响应: {response}")
@@ -474,7 +500,7 @@ class ModelClient(object):
         return None, None
 
     @staticmethod
-    def parse_model_response(raw_data, model_name: str, model_id: str) -> dict | list | str:
+    def parse_model_response_bak(raw_data, model_name: str, model_id: str) -> dict | list | str:
         """
         解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
 
@@ -526,14 +552,10 @@ class ModelClient(object):
             # 它能处理：末尾多余符号、缺少括号、单引号、非转义字符等
             try:
                 result = dirtyjson.loads(text_ori)
-                # dirtyjson 返回的是 AttributedDict 或 AttributedList
-                # 转换为标准 dict/list 以保持程序一致性
+                # 关键点：强制转换回标准对象，避免 AttributedDict 带来的干扰
                 if isinstance(result, (dict, list)):
-                    # 通过重新 dump/load 或者递归转换确保类型纯净
-                    # 这里推荐直接返回，因为 AttributedDict 兼容 dict 接口
-                    # json.loads(json.dumps(result))
                     logger.success(f"dirtyjson 解析成功: {json.dumps(result)[:200]} ...")
-                    return result
+                    return json.loads(json.dumps(result))
             except Exception as e:
                 logger.debug(f"dirtyjson 解析失败: {e}")
                 pass
@@ -583,8 +605,296 @@ class ModelClient(object):
         logger.warning("无法解析为有效 JSON，返回原始文本")
         return text
 
+    @staticmethod
+    def parse_model_response_bak2(raw_data, model_name: str, model_id: str) -> dict | list | str:
+        """
+        解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
+        """
+
+        def _to_standard_types(obj):
+            """将 dirtyjson 的 AttributedDict/List 转换为标准 dict/list"""
+            if isinstance(obj, (dict, list)):
+                try:
+                    # 使用 json 序列化再反序列化是最稳妥的转换方式
+                    return json.loads(json.dumps(obj))
+                except:
+                    return obj
+            return obj
+
+        def _extract_response_text(model: str, data) -> str:
+            """从不同模型的响应结构中提取文本内容"""
+            try:
+                if model == 'openai' or hasattr(data, 'choices'):
+                    return data.choices[0].message.content
+                elif model == 'gemini':
+                    # 兼容 API 返回和 SDK 返回对象
+                    if isinstance(data, dict):
+                        return data['candidates'][0]['content']['parts'][0]['text']
+                    return data.candidates[0].content.parts[0].text
+                elif model in ('gpt', 'doubao'):
+                    choice = data.get('choices', [{}])[0]
+                    return choice.get('message', {}).get('content', '')
+                else:
+                    # 兜底尝试
+                    if hasattr(data, 'choices'):
+                        return data.choices[0].message.content
+                    return str(data)
+            except Exception as e:
+                logger.error(f"提取模型文本失败: {e}")
+                return ''
+
+        def _preprocess_text(text_ori: str) -> str:
+            """移除 JSON 标记和前后空白"""
+            text_ori = text_ori.strip()
+            # 移除 ```json ... ``` 或 ``` ... ```
+            text_ori = re.sub(r'^```(?:json)?\s*|\s*```$', '', text_ori, flags=re.IGNORECASE | re.MULTILINE)
+            return text_ori.strip()
+
+        def _try_parse_json(text_ori: str) -> dict | list | None:
+            """尝试多种方式解析 JSON"""
+            if not text_ori or not any(c in text_ori for c in '{['):
+                return None
+
+            # 尝试 1：标准解析
+            try:
+                return json.loads(text_ori)
+            except json.JSONDecodeError:
+                pass
+
+            # 尝试 2：使用 dirtyjson 解析 (处理单引号、截断、缺失括号等)
+            try:
+                result = dirtyjson.loads(text_ori)
+                if result is not None:
+                    # 必须转换为标准类型，否则 AttributedList 没有 .get() 方法
+                    return _to_standard_types(result)
+            except Exception:
+                pass
+
+            # 尝试 3：手工修复常见的截断问题（针对末尾缺少 ] 或 }）
+            fixed_text = text_ori
+            if fixed_text.startswith('{') and not fixed_text.endswith('}'):
+                fixed_text += '}'
+            if fixed_text.startswith('[') and not fixed_text.endswith(']'):
+                fixed_text += ']'
+
+            try:
+                return _to_standard_types(dirtyjson.loads(fixed_text))
+            except:
+                pass
+
+            # 尝试 4：处理多行连接错误 (如 }{ 变为 },{ )
+            if '\n' in text_ori:
+                normalized_text = re.sub(r'}\s*{', '},{', text_ori)
+                if not normalized_text.startswith('[') and '{' in normalized_text:
+                    normalized_text = f'[{normalized_text}]'
+                try:
+                    return _to_standard_types(dirtyjson.loads(normalized_text))
+                except:
+                    pass
+
+            # 尝试 5：提取最外层 {} 或 [] 块
+            # 优先匹配 {} 因为列式压缩是以 {} 开头的
+            for start_char, end_char in [('{', '}'), ('[', ']')]:
+                start = text_ori.find(start_char)
+                end = text_ori.rfind(end_char)
+                if start != -1:
+                    # 如果找不到结束符，尝试截取到末尾（配合 dirtyjson）
+                    substring = text_ori[start:end + 1] if end != -1 else text_ori[start:]
+                    try:
+                        res = _to_standard_types(dirtyjson.loads(substring))
+                        # 验证提取结果：如果是列式压缩，必须包含 columns 键
+                        if start_char == '{' and isinstance(res, dict) and 'columns' in res:
+                            return res
+                        if start_char == '[' and isinstance(res, list):
+                            return res
+                    except:
+                        continue
+
+            return None
+
+        # --- 主逻辑 ---
+        # 1. 提取文本
+        text = _extract_response_text(model_name, raw_data)
+        if not text:
+            return ""
+
+        # 2. 预处理
+        clean_text = _preprocess_text(text)
+
+        # 3. 解析
+        parsed_data = _try_parse_json(clean_text)
+
+        if parsed_data is not None:
+            # 特殊情况：如果解析出来是 dict 但没有数据，或者是空列表，记录日志
+            if isinstance(parsed_data, dict) and not parsed_data:
+                logger.warning(f"模型 {model_id} 返回了空 JSON 对象")
+            return parsed_data
+
+        logger.warning(f"无法将文本解析为有效 JSON，返回原始文本片段: {clean_text[:100]}...")
+        return clean_text
+
+    @staticmethod
+    def parse_model_response(raw_data, model_name: str, model_id: str) -> dict | list | str:
+        """
+        解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
+        具备括号平衡修复逻辑，支持标准 JSON、列式压缩 JSON 及常规列表。
+        """
+
+        def _to_standard_types(obj):
+            """将 dirtyjson 的 AttributedDict/List 转换为标准 dict/list"""
+            if isinstance(obj, (dict, list)):
+                try:
+                    # 通过 dump/load 强制转换为原生 Python 类型，解决 .get() 报错问题
+                    return json.loads(json.dumps(obj))
+                except:  # noqa
+                    return obj
+            return obj
+
+        def _extract_response_text(model: str, data) -> str:
+            """从不同模型的响应结构中提取文本内容"""
+            try:
+                # 兼容 OpenAI 格式或具有 choices 属性的对象
+                if model == 'openai' or hasattr(data, 'choices'):
+                    return data.choices[0].message.content
+                # 兼容 Gemini 格式
+                elif model == 'gemini':
+                    if isinstance(data, dict):
+                        return data['candidates'][0]['content']['parts'][0]['text']
+                    return data.candidates[0].content.parts[0].text
+                # 兼容 字节跳动豆包/GPT 字典格式
+                elif model in ('gpt', 'doubao'):
+                    choice = data.get('choices', [{}])[0]
+                    return choice.get('message', {}).get('content', '')
+                else:
+                    # 最后的尝试：如果对象有 choices
+                    if hasattr(data, 'choices'):
+                        return data.choices[0].message.content
+                    return str(data)
+            except Exception as e:
+                logger.error(f"提取模型文本内容失败: {e}")
+                return ''
+
+        def _preprocess_text(text_ori: str) -> str:
+            """移除 JSON 标记和前后空白"""
+            text_ori = text_ori.strip()
+            # 移除 ```json ... ``` 或 ``` ... ``` 标记
+            text_ori = re.sub(r'^```(?:json)?\s*|\s*```$', '', text_ori, flags=re.IGNORECASE | re.MULTILINE)
+            return text_ori.strip()
+
+        def _repair_unbalanced_brackets(text: str) -> str:
+            """
+            专门修复结构性不平衡。
+            例如修复: {"data": [ ["a", "b"] } -> 补全为 {"data": [ ["a", "b"] ] }
+            """
+            count_open_bracket = text.count('[')
+            count_close_bracket = text.count(']')
+            count_open_brace = text.count('{')
+            count_close_brace = text.count('}')
+
+            # 场景 A: 内部数组未闭合 ( [ 比 ] 多)，但外部对象是闭合的
+            if count_open_bracket > count_close_bracket and count_close_brace >= count_open_brace:
+                last_brace_idx = text.rfind('}')
+                if last_brace_idx != -1:
+                    # 在最后一个 '}' 之前插入缺失的 ']'
+                    missing_brackets = ']' * (count_open_bracket - count_close_bracket)
+                    return text[:last_brace_idx] + missing_brackets + text[last_brace_idx:]
+
+            # 场景 B: 结尾直接截断 (括号和花括号都少了)
+            if count_open_brace > count_close_brace:
+                missing_brackets = ']' * max(0, count_open_bracket - count_close_bracket)
+                missing_braces = '}' * (count_open_brace - count_close_brace)
+                return text + missing_brackets + missing_braces
+
+            return text
+
+        def _try_parse_json(text_ori: str) -> dict | list | None:
+            """多级尝试解析 JSON"""
+            # 基础检查：如果不包含任何括号，显然不是 JSON
+            if not text_ori or not any(c in text_ori for c in '{['):
+                return None
+
+            # 尝试 1：标准 JSON 解析
+            try:
+                return json.loads(text_ori)
+            except:
+                pass
+
+            # 尝试 2：直接使用 dirtyjson (处理单引号、非转义字符等)
+            try:
+                result = dirtyjson.loads(text_ori)
+                if result is not None:
+                    return _to_standard_types(result)
+            except:
+                pass
+
+            # 尝试 3：结构化修复括号失衡（解决您遇到的 data 数组未闭合问题）
+            try:
+                repaired_text = _repair_unbalanced_brackets(text_ori)
+                if repaired_text != text_ori:
+                    return _to_standard_types(dirtyjson.loads(repaired_text))
+            except:
+                pass
+
+            # 尝试 4：处理多行 JSON 片段或缺失逗号的情况
+            if '\n' in text_ori:
+                # 将相邻的 }{ 替换为 },{
+                normalized_text = re.sub(r'}\s*{', '},{', text_ori)
+                if not normalized_text.startswith('[') and '{' in normalized_text:
+                    normalized_text = f'[{normalized_text}]'
+                try:
+                    return _to_standard_types(dirtyjson.loads(normalized_text))
+                except:
+                    pass
+
+            # 尝试 5：提取最外层 {} 或 [] 片段
+            for start_char, end_char in [('{', '}'), ('[', ']')]:
+                start = text_ori.find(start_char)
+                end = text_ori.rfind(end_char)
+                if start != -1:
+                    # 提取片段，如果没找到结束符则取到最后
+                    substring = text_ori[start:end + 1] if end != -1 else text_ori[start:]
+                    try:
+                        # 对提取出的子串也进行一次平衡修复
+                        substring = _repair_unbalanced_brackets(substring)
+                        res = _to_standard_types(dirtyjson.loads(substring))
+
+                        # 校验结果类型
+                        if start_char == '{' and isinstance(res, dict):
+                            return res
+                        if start_char == '[' and isinstance(res, list):
+                            return res
+                    except:
+                        continue
+
+            return None
+
+        # --- 主处理逻辑 ---
+
+        # 1. 提取文本内容
+        text = _extract_response_text(model_name, raw_data)
+        if not text:
+            logger.warning(f"模型 {model_id} 返回内容为空")
+            return ""
+
+        # 2. 预处理文本
+        clean_text = _preprocess_text(text)
+
+        # 3. 尝试解析 JSON
+        parsed_data = _try_parse_json(clean_text)
+
+        if parsed_data is not None:
+            # 记录空数据情况
+            if (isinstance(parsed_data, dict) and not parsed_data) or \
+                    (isinstance(parsed_data, list) and not parsed_data):
+                logger.info(f"模型 {model_id} 解析得到空的 JSON 结构")
+            return parsed_data
+
+        # 4. 解析失败，返回清理后的原始文本
+        logger.warning(f"无法将文本解析为有效 JSON，返回原始文本片段: {clean_text[:100]}...")
+        return clean_text
+
     def record_token_cost(self, llm_response, model_id: str, task_name: str,
-                          finish_reason: str, start_time: float, mode: str = None) -> dict:
+                          finish_reason: str, start_time: float, model_name: str = None) -> dict:
         """
         记录Gemini API调用的token消耗和成本。
         Args:
@@ -593,7 +903,7 @@ class ModelClient(object):
             task_name: 任务名称。
             finish_reason: 完成原因。
             start_time: 开始时间戳。
-            mode: 记录模式，'formal' 或 'test'。
+            model_name: 模型名称。
         Returns:
             dict: 更新后的结果字典，包含新增的'tokenCost'键，值为计算出的成本（单位：美元）。
         """
@@ -633,8 +943,8 @@ class ModelClient(object):
         spend_time = round(time.time() - start_time, 2)
         usage_record['spend_time'] = spend_time
         logger.info(
-            f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, "
-            f"完成原因: {finish_reason}, 消耗: {usage_record.get('cost', 0):.4f}元, 耗时：{spend_time}秒, 模式: {mode}")
+            f"任务: {task_name}, 模型: {model_id}, 输出: {preview}, 完成原因: {finish_reason}, "
+            f"消耗: {usage_record.get('cost', 0):.4f}元, 耗时：{spend_time}秒, 运营商: {model_name}")
         return usage_record
 
     def record_token_cost_gemini_style(self, response, model_id: str, task_name: str,
