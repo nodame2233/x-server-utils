@@ -4,7 +4,6 @@ import os
 import traceback
 import sys
 from pathlib import Path
-
 import dirtyjson
 from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.exceptions import RequestValidationError, HTTPException
@@ -12,16 +11,18 @@ from starlette.responses import JSONResponse
 import __main__  # noqa
 import uvicorn
 import socket
-import requests
-import time
 import argparse
 import concurrent.futures
 import base64
 import io
-import json
 import openai
 from PIL import Image
 from loguru import logger
+import time
+import json
+import requests
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHANGELOG_PATH = os.path.join(BASE_DIR, "txt", "CHANGELOG.md")
@@ -67,9 +68,11 @@ class ResponseCode:
     # 330-360 为文件错误，status=7，不重新解析
     FILE_ERROR = (330, "file error, unable to parse")
     FILE_EMPTY = (335, "file is empty")
+    FILE_TRUNCATED = (336, "file is truncated")
     # PARSING_EMPTY = (336, "parsing is empty")
     FILE_TYPE_UNSUPPORTED = (340, "unsupported file types")
     FILE_LANG_UNSUPPORTED = (350, "unsupported file language")
+    REPARSE_FAILED = (352, "reparse failed")
     TIMEOUT_ALREADY = (355, "already timeout, task failed")
     TIMEOUT = (360, "timeout 600s")
     # 常规错误码
@@ -363,6 +366,8 @@ class ServerUtil(object):
 
 class ModelClient(object):
     def __init__(self, user_config: dict, cost_config: dict, prompt_config: dict):
+        # self.service = 'dp'
+        # self.user_config = user_config[self.service]
         self.user_config = user_config
         self.cost_config = cost_config
         self.prompt_config = prompt_config
@@ -372,8 +377,8 @@ class ModelClient(object):
     def connect_init(self):
         return openai.OpenAI(api_key=self.user_config['api_key'], base_url=self.user_config['base_url'])
 
-    def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
-                         timeout: int = 300, max_retries: int = 2):
+    def generate_content_bak(self, task_name: str, user_input: str | list | dict, model_id: str = None,
+                             timeout: int = 300, max_retries: int = 2):
         start_time = time.time()
         llm_config = self.prompt_config[task_name]
         sys_prompt = llm_config['prompt']
@@ -417,6 +422,9 @@ class ModelClient(object):
             self.client = self.connect_init()
 
         model_id = model_id or llm_config['model_id']
+        # if self.service == 'dp':
+        #     model_id = model_id.replace('Vendor2/', '').lower()
+        #     model_id = f'{model_id}-preview' if model_id == 'gemini-3-flash' else model_id
         for attempt in range(max_retries):
             try:
                 if self.model_name == 'gemini':
@@ -499,239 +507,147 @@ class ModelClient(object):
         logger.error(f"达到最大重试次数，放弃任务: {task_name}, 耗时: {spend_time}")
         return None, None
 
-    @staticmethod
-    def parse_model_response_bak(raw_data, model_name: str, model_id: str) -> dict | list | str:
-        """
-        解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
+    def generate_content(self, task_name: str, user_input: str | list | dict, model_id: str = None,
+                         timeout: int = 600, max_retries: int = 2, page: int = None):
+        start_time = time.time()
+        llm_config = self.prompt_config[task_name]
+        sys_prompt = llm_config['prompt']
+        task_type = llm_config['task_type']
 
-        Args:
-            raw_data: 大模型返回的原始数据。
-            model_name: 模型名称。
-            model_id: 模型 ID。
-
-        Returns:
-            dict | list | str: 解析后的 JSON 数据（字典或列表），失败时返回原始文本。
-        """
-
-        def _extract_response_text(model: str, data) -> str:
-            """从不同模型的响应结构中提取文本内容"""
-            if model == 'openai':
-                return data.choices[0].message.content
-
-            elif model == 'gemini':
-                return data['candidates'][0]['content']['parts'][0]['text']
-                # candidate = data.get('candidates', [{}])[0]
-                # return candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
-
-            elif model in ('gpt', 'doubao'):
-                choice = data.get('choices', [{}])[0]
-                return choice.get('message', {}).get('content', '')
-
+        # --- [1. 构造 Messages 逻辑保持不变] ---
+        if task_type in ['image', 'doc', 'multi']:
+            messages = [{"role": "system", "content": sys_prompt}]
+            user_content = []
+            if isinstance(user_input, dict):
+                parsed_text = user_input.get("text")
+                if parsed_text: user_content.append({"type": "text", "text": parsed_text})
+                images = user_input.get("doc") or user_input.get("image")
+                if not isinstance(images, list): images = [images]
+            elif isinstance(user_input, str):
+                images = [user_input]
             else:
-                logger.error(f"不支持的模型名称: {model}")
-                return ''
+                images = user_input
+            mime_type = llm_config.get('mime_type', 'image/png')
+            for b64 in images:
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}})
+            messages.append({"role": "user", "content": user_content})
+        elif task_type == 'text':
+            messages = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_input}]
+        else:
+            logger.error(f"不支持的任务类型: {task_type}")
+            return None, None
 
-        def _preprocess_text(text_ori: str) -> str:
-            """移除 JSON 标记和前后空白"""
-            text_ori = text_ori.strip()
-            return re.sub(r'^```(json)?|```$', '', text_ori, flags=re.IGNORECASE).strip()
+        if not self.client:
+            self.client = self.connect_init()
+        model_id = model_id or llm_config['model_id']
 
-        def _try_parse_json(text_ori: str) -> dict | list | None:
-            """尝试多种方式解析 JSON"""
-            # 准备工作：如果是空的字符串直接返回
-            if not text_ori or not any(c in text_ori for c in '{['):
-                return None
+        # --- [2. 定义内部请求函数以便放入线程池] ---
+        def _execute_api_call():
+            """真正执行网络请求的内部函数"""
+            if self.model_name == 'gemini':
+                # Gemini 的请求逻辑 (保持你原有的逻辑)
+                user_parts = []
+                if isinstance(user_input, str):
+                    user_parts.append({"text": user_input})
+                elif isinstance(user_input, dict):
+                    text_input = user_input.get("text")
+                    doc_input = user_input.get("doc")
+                    image_input = user_input.get("image")
+                    if text_input: user_parts.append({"text": text_input})
+                    if doc_input:
+                        for part in doc_input:
+                            user_parts.append({"inline_data": {"mime_type": 'application/pdf', "data": part}})
+                    if image_input:
+                        for part in image_input:
+                            user_parts.append({"inline_data": {"mime_type": 'image/png', "data": part}})
 
-            # 尝试 1：直接解析
+                payload = {
+                    "contents": [{"role": "model", "parts": [{"text": sys_prompt}]},
+                                 {"role": "user", "parts": user_parts}],
+                    "generationConfig": {
+                        "temperature": llm_config['temperature'], "maxOutputTokens": llm_config['maxOutputTokens'],
+                        "topP": llm_config['topP'], "frequencyPenalty": 0.0, "responseMimeType": "application/json"
+                    }
+                }
+                # 注意：这里的 requests 必须也设一个基础 timeout 防止套接字挂死
+                resp = requests.post(url=self.user_config['temp_url'], json=payload, timeout=timeout)
+                return resp.json()
+            else:
+                # OpenAI 兼容 API 请求逻辑
+                return self.client.chat.completions.create(
+                    model=model_id, messages=messages,
+                    temperature=llm_config['temperature'],
+                    max_tokens=llm_config['maxOutputTokens'],
+                    # max_completion_tokens=llm_config.get('maxOutputTokens', 4096),
+                    top_p=llm_config['topP'],
+                    frequency_penalty=llm_config.get('frequencyPenalty'),
+                    response_format=llm_config.get('response_format'),
+                    timeout=timeout,
+                    reasoning_effort=llm_config.get('thinkingLevel')
+                )
+
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        # --- [3. 带进度日志和硬超时重试循环] ---
+        for attempt in range(max_retries):
             try:
-                return json.loads(text_ori)
-            except json.JSONDecodeError:
-                pass
+                # --- [2. 提交任务到线程池] ---
+                future = executor.submit(_execute_api_call)
+                elapsed_seconds = 0
+                response = None
 
-            # 尝试 2：使用 dirtyjson 解析 (强力兜底)
-            # 它能处理：末尾多余符号、缺少括号、单引号、非转义字符等
-            try:
-                result = dirtyjson.loads(text_ori)
-                # 关键点：强制转换回标准对象，避免 AttributedDict 带来的干扰
-                if isinstance(result, (dict, list)):
-                    logger.success(f"dirtyjson 解析成功: {json.dumps(result)[:200]} ...")
-                    return json.loads(json.dumps(result))
-            except Exception as e:
-                logger.debug(f"dirtyjson 解析失败: {e}")
-                pass
+                # --- [3. 轮询检查状态并打印进度日志] ---
+                while elapsed_seconds < timeout:
+                    # 每 1 秒检查一次结果是否返回 (非阻塞)
+                    done, _ = concurrent.futures.wait([future], timeout=1)
+                    if done:
+                        response = future.result()
+                        break
 
-            # 尝试 3：处理多行 JSON 或片段
-            if '\n' in text_ori:
-                normalized_text = re.sub(r'}\s*{', '},{', text_ori)
-                if not normalized_text.startswith('[') and '{' in normalized_text:
-                    normalized_text = f'[{normalized_text}]'
-                try:
-                    return json.loads(normalized_text)
-                except json.JSONDecodeError:
-                    pass
+                    elapsed_seconds += 1
+                    if elapsed_seconds % 20 == 0:
+                        logger.info(
+                            f"任务 [{task_name}] Page: {page} 已运行 {elapsed_seconds}s (重试: {attempt}/{max_retries - 1})")
 
-            # 尝试 4：提取最外层 {} 或 [] 包裹的内容
-            for wrapper in ('{}', '[]'):
-                try:
-                    if wrapper[0] in text_ori and wrapper[-1] in text_ori:
-                        start = text_ori.find(wrapper[0])
-                        end = text_ori.rfind(wrapper[-1]) + 1
-                        if start < end:
-                            substring = text_ori[start:end]
-                            # 对提取出的子串再次尝试标准解析和 dirty 采样
-                            try:
-                                return json.loads(substring)
-                            except:  # noqa
-                                return dirtyjson.loads(substring)
-                except Exception:  # noqa
-                    continue
-
-            return None
-
-        # 1. 提取模型响应中的文本内容
-        text = _extract_response_text(model_name, raw_data)
-        if not text:
-            logger.warning(f"模型 {model_id} 的响应中未找到有效文本内容")
-            return text
-
-        # 2. 预处理文本（移除 JSON 标记和空白）
-        text = _preprocess_text(text)
-
-        # 3. 尝试解析为 JSON
-        parsed_data = _try_parse_json(text)
-        if parsed_data is not None:
-            return parsed_data
-
-        logger.warning("无法解析为有效 JSON，返回原始文本")
-        return text
-
-    @staticmethod
-    def parse_model_response_bak2(raw_data, model_name: str, model_id: str) -> dict | list | str:
-        """
-        解析大模型返回的文本，提取有效的 JSON 数据或原始文本。
-        """
-
-        def _to_standard_types(obj):
-            """将 dirtyjson 的 AttributedDict/List 转换为标准 dict/list"""
-            if isinstance(obj, (dict, list)):
-                try:
-                    # 使用 json 序列化再反序列化是最稳妥的转换方式
-                    return json.loads(json.dumps(obj))
-                except:
-                    return obj
-            return obj
-
-        def _extract_response_text(model: str, data) -> str:
-            """从不同模型的响应结构中提取文本内容"""
-            try:
-                if model == 'openai' or hasattr(data, 'choices'):
-                    return data.choices[0].message.content
-                elif model == 'gemini':
-                    # 兼容 API 返回和 SDK 返回对象
-                    if isinstance(data, dict):
-                        return data['candidates'][0]['content']['parts'][0]['text']
-                    return data.candidates[0].content.parts[0].text
-                elif model in ('gpt', 'doubao'):
-                    choice = data.get('choices', [{}])[0]
-                    return choice.get('message', {}).get('content', '')
-                else:
-                    # 兜底尝试
-                    if hasattr(data, 'choices'):
-                        return data.choices[0].message.content
-                    return str(data)
-            except Exception as e:
-                logger.error(f"提取模型文本失败: {e}")
-                return ''
-
-        def _preprocess_text(text_ori: str) -> str:
-            """移除 JSON 标记和前后空白"""
-            text_ori = text_ori.strip()
-            # 移除 ```json ... ``` 或 ``` ... ```
-            text_ori = re.sub(r'^```(?:json)?\s*|\s*```$', '', text_ori, flags=re.IGNORECASE | re.MULTILINE)
-            return text_ori.strip()
-
-        def _try_parse_json(text_ori: str) -> dict | list | None:
-            """尝试多种方式解析 JSON"""
-            if not text_ori or not any(c in text_ori for c in '{['):
-                return None
-
-            # 尝试 1：标准解析
-            try:
-                return json.loads(text_ori)
-            except json.JSONDecodeError:
-                pass
-
-            # 尝试 2：使用 dirtyjson 解析 (处理单引号、截断、缺失括号等)
-            try:
-                result = dirtyjson.loads(text_ori)
-                if result is not None:
-                    # 必须转换为标准类型，否则 AttributedList 没有 .get() 方法
-                    return _to_standard_types(result)
-            except Exception:
-                pass
-
-            # 尝试 3：手工修复常见的截断问题（针对末尾缺少 ] 或 }）
-            fixed_text = text_ori
-            if fixed_text.startswith('{') and not fixed_text.endswith('}'):
-                fixed_text += '}'
-            if fixed_text.startswith('[') and not fixed_text.endswith(']'):
-                fixed_text += ']'
-
-            try:
-                return _to_standard_types(dirtyjson.loads(fixed_text))
-            except:
-                pass
-
-            # 尝试 4：处理多行连接错误 (如 }{ 变为 },{ )
-            if '\n' in text_ori:
-                normalized_text = re.sub(r'}\s*{', '},{', text_ori)
-                if not normalized_text.startswith('[') and '{' in normalized_text:
-                    normalized_text = f'[{normalized_text}]'
-                try:
-                    return _to_standard_types(dirtyjson.loads(normalized_text))
-                except:
-                    pass
-
-            # 尝试 5：提取最外层 {} 或 [] 块
-            # 优先匹配 {} 因为列式压缩是以 {} 开头的
-            for start_char, end_char in [('{', '}'), ('[', ']')]:
-                start = text_ori.find(start_char)
-                end = text_ori.rfind(end_char)
-                if start != -1:
-                    # 如果找不到结束符，尝试截取到末尾（配合 dirtyjson）
-                    substring = text_ori[start:end + 1] if end != -1 else text_ori[start:]
-                    try:
-                        res = _to_standard_types(dirtyjson.loads(substring))
-                        # 验证提取结果：如果是列式压缩，必须包含 columns 键
-                        if start_char == '{' and isinstance(res, dict) and 'columns' in res:
-                            return res
-                        if start_char == '[' and isinstance(res, list):
-                            return res
-                    except:
+                # --- [4. 检查是否因超时退出 while] ---
+                if response is None:
+                    logger.error(f"任务 [{task_name}] Page: {page} 请求超时 (超过 {timeout}s)，触发重试机制")
+                    # 此处无法强制 kill 掉 future 线程，但主线程已不再等待它
+                    if attempt < max_retries - 1:
                         continue
+                    else:
+                        break
 
-            return None
+                # --- [5. 解析响应逻辑] ---
+                finish_reason = None
+                if self.model_name == 'gemini':
+                    if response and 'candidates' in response:
+                        finish_reason = response['candidates'][0].get('finishReason', '').lower()
+                else:
+                    finish_reason = response.choices[0].finish_reason
 
-        # --- 主逻辑 ---
-        # 1. 提取文本
-        text = _extract_response_text(model_name, raw_data)
-        if not text:
-            return ""
+                if finish_reason in ['stop', 'null', None, 'end_turn']:  # 兼容各家模型
+                    result = ModelClient.parse_model_response(response, self.model_name, model_id)
+                    cost = self.record_token_cost(response, model_id, task_name, str(finish_reason), start_time,
+                                                  self.model_name)
+                    executor.shutdown(wait=False)  # 任务成功，清理线程池
+                    return result, cost
+                else:
+                    logger.error(f"大模型吞吐异常，任务: {task_name}, 完成原因: {finish_reason} 内容：{response}")
 
-        # 2. 预处理
-        clean_text = _preprocess_text(text)
+            except Exception as e:
+                logger.error(f"模型 {model_id} 任务 {task_name} 尝试 {attempt + 1} 失败: {str(e)}\n{traceback.format_exc()}")
+                # 如果是网络相关的超时，在此捕获并进入下一次重试
 
-        # 3. 解析
-        parsed_data = _try_parse_json(clean_text)
+            if attempt < max_retries - 1:
+                wait_time = 2 * (attempt + 1)
+                logger.warning(f"等待 {wait_time}s 后进行第 {attempt + 2} 次重试...")
+                time.sleep(wait_time)
 
-        if parsed_data is not None:
-            # 特殊情况：如果解析出来是 dict 但没有数据，或者是空列表，记录日志
-            if isinstance(parsed_data, dict) and not parsed_data:
-                logger.warning(f"模型 {model_id} 返回了空 JSON 对象")
-            return parsed_data
-
-        logger.warning(f"无法将文本解析为有效 JSON，返回原始文本片段: {clean_text[:100]}...")
-        return clean_text
+        executor.shutdown(wait=False)
+        spend_time = round(time.time() - start_time, 2)
+        logger.error(f"达到最大重试次数，放弃任务: {task_name}, 总耗时: {spend_time}s")
+        return None, None
 
     @staticmethod
     def parse_model_response(raw_data, model_name: str, model_id: str) -> dict | list | str:
