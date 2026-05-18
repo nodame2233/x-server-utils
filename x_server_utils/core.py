@@ -64,6 +64,8 @@ class ResponseCode:
     ERROR = (300, "error")
     # 310-329 为解析失败，status=5，可重新解析
     PARSING_FAILED = (310, "parsing failed")
+    UNIPARSER_FAILED = (311, "uniparser parsing failed")
+    UNIPARSER_FAILED_GET = (312, "uniparser get result failed")
     # PARSING_EMPTY = (320, "parsing is empty")
     # 330-360 为文件错误，status=7，不重新解析
     FILE_ERROR = (330, "file error, unable to parse")
